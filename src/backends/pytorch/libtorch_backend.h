@@ -26,7 +26,6 @@
 #pragma once
 
 #include <torch/script.h>        // One-stop header for TorchScript
-#include <torchvision/vision.h>  // Torchvision header
 #include <set>
 #include <string>
 #include <unordered_map>
