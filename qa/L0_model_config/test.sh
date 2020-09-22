@@ -86,8 +86,7 @@ for modelpath in \
         autofill_noplatform_success/tensorrt/empty_config_variable/1     \
         autofill_noplatform_success/tensorrt/no_config_variable/1 \
         autofill_noplatform_success/tensorrt/hint_for_no_batch/1 \
-        autofill_noplatform_success/tensorrt/multi_prof_max_bs/1 \
-        autofill_noplatform_success/tensorrt/multi_prof_no_batch/1 ; do
+        autofill_noplatform_success/tensorrt/multi_prof_max_bs/1 ; do
     mkdir -p $modelpath
     cp /data/inferenceserver/${REPO_VERSION}/qa_variable_model_repository/plan_float32_float32_float32/1/model.plan \
        $modelpath/.
@@ -133,6 +132,7 @@ for modelpath in \
        autofill_noplatform/ensemble/unmapped_input/unmapped_input/1 \
        autofill_noplatform/ensemble/unmapped_input/fp32_dim1_batch4/1 \
        autofill_noplatform/ensemble/unmapped_input/fp32_dim1_batch4_input4/1 \
+       autofill_noplatform/ensemble/unmapped_input/fp32_dim1_batch4_output3/1 \
        autofill_noplatform/ensemble/circular_dependency/circular_dependency/1 \
        autofill_noplatform/ensemble/circular_dependency/circular_dependency_2/1 \
        autofill_noplatform/ensemble/no_required_version/no_required_version/1 \

@@ -40,7 +40,6 @@ set(
 set(
   BACKEND_HDRS
   backend_factory.h
-  tritonbackend.h
   triton_memory_manager.h
   triton_backend_manager.h
   triton_model.h
@@ -63,13 +62,10 @@ if(${TRITON_ENABLE_METRICS})
   )
 endif() # TRITON_ENABLE_METRICS
 
-add_subdirectory(examples src/backends/backend/examples)
-if(${TRITON_ENABLE_ONNXRUNTIME})
-  add_subdirectory(onnxruntime src/backends/backend/onnxruntime)
-endif() # TRITON_ENABLE_ONNXRUNTIME
-if(${TRITON_ENABLE_TENSORFLOW})
-  add_subdirectory(tensorflow src/backends/backend/tensorflow)
-endif() # TRITON_ENABLE_TENSORFLOW
-if(${TRITON_ENABLE_PYTHON})
-  add_subdirectory(python src/backends/backend/python)
-endif() # TRITON_ENABLE_PYTHON
+target_link_libraries(
+  triton-backend-library
+  PUBLIC
+    triton-core-backendapi  # from repo-core
+    triton-core-serverapi   # from repo-core
+    triton-common-json      # from repo-common
+)

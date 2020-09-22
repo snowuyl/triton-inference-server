@@ -36,10 +36,12 @@
 #include "src/core/filesystem.h"
 #include "src/core/logging.h"
 
-#define TRITONJSON_STATUSTYPE Status
-#define TRITONJSON_STATUSRETURN(M) return Status(Status::Code::INTERNAL, (M))
-#define TRITONJSON_STATUSSUCCESS Status::Success
-#include "src/core/json.h"
+#define TRITONJSON_STATUSTYPE nvidia::inferenceserver::Status
+#define TRITONJSON_STATUSRETURN(M)        \
+  return nvidia::inferenceserver::Status( \
+      nvidia::inferenceserver::Status::Code::INTERNAL, (M))
+#define TRITONJSON_STATUSSUCCESS nvidia::inferenceserver::Status::Success
+#include "triton/common/triton_json.h"
 
 #ifdef TRITON_ENABLE_GPU
 #include <cuda_runtime_api.h>
@@ -726,17 +728,18 @@ GetNormalizedModelConfig(
   // If dynamic batching is specified...
   if (config->has_dynamic_batching()) {
     // If preferred batch size is not specified choose
-    // automatically. For now we just choose 4, 8 as those are
-    // generally good values for GPUs.
+    // automatically. For now we just choose 4, 8, and max batch size
+    // as those are generally good values for GPUs.
     if (config->dynamic_batching().preferred_batch_size().size() == 0) {
-      if (config->max_batch_size() >= 4) {
-        config->mutable_dynamic_batching()->mutable_preferred_batch_size()->Add(
-            4);
+      auto mutable_preferred_batch_sie =
+          config->mutable_dynamic_batching()->mutable_preferred_batch_size();
+      if (config->max_batch_size() > 4) {
+        mutable_preferred_batch_sie->Add(4);
       }
-      if (config->max_batch_size() >= 8) {
-        config->mutable_dynamic_batching()->mutable_preferred_batch_size()->Add(
-            8);
+      if (config->max_batch_size() > 8) {
+        mutable_preferred_batch_sie->Add(8);
       }
+      mutable_preferred_batch_sie->Add(config->max_batch_size());
     }
   }
 
@@ -746,6 +749,25 @@ GetNormalizedModelConfig(
     if (config->sequence_batching().max_sequence_idle_microseconds() == 0) {
       config->mutable_sequence_batching()->set_max_sequence_idle_microseconds(
           SEQUENCE_IDLE_DEFAULT_MICROSECONDS);
+    }
+
+    if (config->sequence_batching().has_oldest()) {
+      // If preferred batch size is not specified choose
+      // automatically. For now we just choose 4, 8, and max batch size
+      // as those are generally good values for GPUs.
+      if (config->sequence_batching().oldest().preferred_batch_size().size() ==
+          0) {
+        auto mutable_preferred_batch_sie = config->mutable_sequence_batching()
+                                               ->mutable_oldest()
+                                               ->mutable_preferred_batch_size();
+        if (config->max_batch_size() > 4) {
+          mutable_preferred_batch_sie->Add(4);
+        }
+        if (config->max_batch_size() > 8) {
+          mutable_preferred_batch_sie->Add(8);
+        }
+        mutable_preferred_batch_sie->Add(config->max_batch_size());
+      }
     }
   }
 
@@ -862,8 +884,7 @@ ValidateBatchIO(const inference::ModelConfig& config)
 #ifdef TRITON_ENABLE_TENSORRT
       (config.platform() != kTensorRTPlanPlatform) &&
 #endif  // TRITON_ENABLE_TENSORRT
-      ((config.batch_input_size() != 0) || (config.batch_output_size() != 0))
-  ) {
+      ((config.batch_input_size() != 0) || (config.batch_output_size() != 0))) {
     return Status(
         Status::Code::INVALID_ARG,
         "batch inputs and batch outputs are only supported for custom "
@@ -1555,7 +1576,9 @@ ValidateModelConfigInt64()
       "ModelConfig::sequence_batching::max_sequence_idle_microseconds",
       "ModelConfig::ensemble_scheduling::step::model_version",
       "ModelConfig::model_warmup::inputs::value::dims",
-      "ModelConfig::optimization::cuda::graph_spec::input::value::dim"};
+      "ModelConfig::optimization::cuda::graph_spec::input::value::dim",
+      "ModelConfig::optimization::cuda::graph_spec::graph_lower_bound::input::"
+      "value::dim"};
 
   if (int64_fields != expected) {
     return Status(
@@ -1567,9 +1590,10 @@ ValidateModelConfigInt64()
 
 Status
 FixInt(
-    TritonJson::Value& document, TritonJson::Value& io, const std::string& name)
+    triton::common::TritonJson::Value& document,
+    triton::common::TritonJson::Value& io, const std::string& name)
 {
-  TritonJson::Value str_value;
+  triton::common::TritonJson::Value str_value;
   if (!io.Find(name.c_str(), &str_value)) {
     return Status::Success;
   }
@@ -1594,15 +1618,17 @@ FixInt(
 
 Status
 FixIntArray(
-    TritonJson::Value& document, TritonJson::Value& io, const std::string& name)
+    triton::common::TritonJson::Value& document,
+    triton::common::TritonJson::Value& io, const std::string& name)
 {
-  TritonJson::Value fixed_shape_array(document, TritonJson::ValueType::ARRAY);
+  triton::common::TritonJson::Value fixed_shape_array(
+      document, triton::common::TritonJson::ValueType::ARRAY);
 
   if (!io.Find(name.c_str())) {
     return Status::Success;
   }
 
-  TritonJson::Value shape_array;
+  triton::common::TritonJson::Value shape_array;
   RETURN_IF_ERROR(io.MemberAsArray(name.c_str(), &shape_array));
   for (size_t i = 0; i < shape_array.ArraySize(); ++i) {
     std::string str;
@@ -1629,11 +1655,11 @@ FixIntArray(
 
 Status
 FixObjectArray(
-    TritonJson::Value& document, TritonJson::Value& arr,
-    const std::string& name)
+    triton::common::TritonJson::Value& document,
+    triton::common::TritonJson::Value& arr, const std::string& name)
 {
   for (size_t i = 0; i < arr.ArraySize(); ++i) {
-    TritonJson::Value obj;
+    triton::common::TritonJson::Value obj;
     RETURN_IF_ERROR(arr.IndexAsObject(i, &obj));
     RETURN_IF_ERROR(FixInt(document, obj, name));
   }
@@ -1684,20 +1710,20 @@ ModelConfigToJson(
   // represented as strings. Protobuf doesn't provide an option to
   // disable this (sigh) so we need to fix it up here as we want the
   // json representation of the config to be reasonable json...
-  TritonJson::Value config_json;
+  triton::common::TritonJson::Value config_json;
   config_json.Parse(config_json_str);
 
   // Fix input::dims, input::reshape::shape, output::dims,
   // output::reshape::shape
   for (std::string name : {"input", "output"}) {
-    TritonJson::Value ios;
+    triton::common::TritonJson::Value ios;
     RETURN_IF_ERROR(config_json.MemberAsArray(name.c_str(), &ios));
     for (size_t i = 0; i < ios.ArraySize(); ++i) {
-      TritonJson::Value io;
+      triton::common::TritonJson::Value io;
       RETURN_IF_ERROR(ios.IndexAsObject(i, &io));
       RETURN_IF_ERROR(FixIntArray(config_json, io, "dims"));
 
-      TritonJson::Value reshape;
+      triton::common::TritonJson::Value reshape;
       if (io.Find("reshape", &reshape)) {
         RETURN_IF_ERROR(FixIntArray(config_json, reshape, "shape"));
       }
@@ -1706,9 +1732,9 @@ ModelConfigToJson(
 
   // Fix version_policy::specific::versions
   {
-    TritonJson::Value vp;
+    triton::common::TritonJson::Value vp;
     if (config_json.Find("version_policy", &vp)) {
-      TritonJson::Value specific;
+      triton::common::TritonJson::Value specific;
       if (vp.Find("specific", &specific)) {
         RETURN_IF_ERROR(FixIntArray(config_json, specific, "versions"));
       }
@@ -1719,21 +1745,21 @@ ModelConfigToJson(
   // dynamic_batching::default_queue_policy::default_timeout_microseconds,
   // dynamic_batching::priority_queue_policy::value::default_timeout_microseconds
   {
-    TritonJson::Value db;
+    triton::common::TritonJson::Value db;
     if (config_json.Find("dynamic_batching", &db)) {
       RETURN_IF_ERROR(FixInt(config_json, db, "max_queue_delay_microseconds"));
-      TritonJson::Value dqp;
+      triton::common::TritonJson::Value dqp;
       if (db.Find("default_queue_policy", &dqp)) {
         RETURN_IF_ERROR(
             FixInt(config_json, dqp, "default_timeout_microseconds"));
       }
-      TritonJson::Value pqp;
+      triton::common::TritonJson::Value pqp;
       if (db.Find("priority_queue_policy", &pqp)) {
         // Iterate over each member in 'pqp' and fix...
         std::vector<std::string> members;
         RETURN_IF_ERROR(pqp.Members(&members));
         for (const auto& m : members) {
-          TritonJson::Value el;
+          triton::common::TritonJson::Value el;
           RETURN_IF_ERROR(pqp.MemberAsObject(m.c_str(), &el));
           RETURN_IF_ERROR(
               FixInt(config_json, el, "default_timeout_microseconds"));
@@ -1745,11 +1771,11 @@ ModelConfigToJson(
   // Fix sequence_batching::oldest::max_queue_delay_microseconds,
   // sequence_batching::max_sequence_idle_microseconds
   {
-    TritonJson::Value sb;
+    triton::common::TritonJson::Value sb;
     if (config_json.Find("sequence_batching", &sb)) {
       RETURN_IF_ERROR(
           FixInt(config_json, sb, "max_sequence_idle_microseconds"));
-      TritonJson::Value oldest;
+      triton::common::TritonJson::Value oldest;
       if (sb.Find("oldest", &oldest)) {
         RETURN_IF_ERROR(
             FixInt(config_json, oldest, "max_queue_delay_microseconds"));
@@ -1759,9 +1785,9 @@ ModelConfigToJson(
 
   // Fix ensemble_scheduling::step::model_version.
   {
-    TritonJson::Value ens;
+    triton::common::TritonJson::Value ens;
     if (config_json.Find("ensemble_scheduling", &ens)) {
-      TritonJson::Value step;
+      triton::common::TritonJson::Value step;
       if (ens.Find("step", &step)) {
         RETURN_IF_ERROR(FixObjectArray(config_json, step, "model_version"));
       }
@@ -1770,17 +1796,17 @@ ModelConfigToJson(
 
   // Fix model_warmup::inputs::value::dims.
   {
-    TritonJson::Value warmups;
+    triton::common::TritonJson::Value warmups;
     if (config_json.Find("model_warmup", &warmups)) {
       for (size_t i = 0; i < warmups.ArraySize(); ++i) {
-        TritonJson::Value warmup;
+        triton::common::TritonJson::Value warmup;
         RETURN_IF_ERROR(warmups.IndexAsObject(i, &warmup));
-        TritonJson::Value inputs;
+        triton::common::TritonJson::Value inputs;
         if (warmup.Find("inputs", &inputs)) {
           std::vector<std::string> members;
           RETURN_IF_ERROR(inputs.Members(&members));
           for (const auto& m : members) {
-            TritonJson::Value input;
+            triton::common::TritonJson::Value input;
             RETURN_IF_ERROR(inputs.MemberAsObject(m.c_str(), &input));
             RETURN_IF_ERROR(FixIntArray(config_json, input, "dims"));
           }
@@ -1790,7 +1816,7 @@ ModelConfigToJson(
   }
 
   // Convert fixed json back the string...
-  TritonJson::WriteBuffer buffer;
+  triton::common::TritonJson::WriteBuffer buffer;
   config_json.Write(&buffer);
   *json_str = std::move(buffer.MutableContents());
 

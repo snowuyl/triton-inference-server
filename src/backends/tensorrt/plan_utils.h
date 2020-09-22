@@ -32,27 +32,7 @@
 
 namespace nvidia { namespace inferenceserver {
 
-// The memory layouts for i/o tensors
-enum class MemoryFormat {
-  // Row major linear format.
-  LINEAR,
-  // Two wide channel vectorized row major format.
-  CHW2,
-  // Four wide channel vectorized row major format.
-  CHW4,
-  // Eight channel format where C is padded to a multiple of 8.
-  HCW8,
-  // Sixteen wide channel vectorized row major format.
-  CHW16,
-  // Thirty-two wide channel vectorized row major format.
-  CHW32,
-  // Invalid Memory format
-  INVALID
-};
-
-MemoryFormat ConvertTrtFmtToFmt(nvinfer1::TensorFormat trt_fmt);
-
-const std::string MemoryFormat_Name(MemoryFormat fmt);
+bool UseTensorRTv2API(const nvinfer1::ICudaEngine* engine);
 
 inference::DataType ConvertTrtTypeToDataType(nvinfer1::DataType trt_type);
 
@@ -74,7 +54,7 @@ Status ValidateDimension(
 Status CompareDimsSupported(
     const std::string& model_name, const std::string& tensor_name,
     const nvinfer1::Dims& model_dims, const DimsList& dims,
-    const bool supports_batching, const bool is_dynamic,
+    const bool supports_batching, const bool contains_explicit_batch,
     const bool compare_exact);
 
 Status CompareShapeDimsSupported(
@@ -98,6 +78,8 @@ Status MaximumDims(
 void DimsToDimVec(const nvinfer1::Dims& model_dims, std::vector<int64_t>* dims);
 
 bool DimVecToDims(const std::vector<int64_t>& dim_vec, nvinfer1::Dims* dims);
+
+int64_t GetElementCount(const nvinfer1::Dims& dims);
 
 bool ContainsWildcard(const nvinfer1::Dims& dims);
 

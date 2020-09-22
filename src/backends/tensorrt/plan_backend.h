@@ -70,12 +70,18 @@ class PlanBackend : public InferenceBackend {
 
 #ifdef TRITON_ENABLE_CUDA_GRAPH
   struct GraphSpec {
-    GraphSpec() : batch_size_(0), captured_(false) {}
+    GraphSpec() : batch_size_(0), lower_bound_batch_size_(0), captured_(false)
+    {
+    }
     int batch_size_;
     std::map<std::string, std::vector<int64_t>> shapes_;
+    int lower_bound_batch_size_;
+    std::map<std::string, std::vector<int64_t>> lower_bound_shapes_;
     bool captured_;
   };
-  Status InitializeGraphSpecs(std::vector<GraphSpec>* graph_specs);
+  Status InitializeGraphSpecs(
+      std::vector<GraphSpec>* graph_specs, bool* allow_inexact_match);
+  Status ValidateGraphSpec(const GraphSpec& graph_spec);
 #endif
 
   Status DuplicateWarmupRequests(
@@ -123,10 +129,12 @@ class PlanBackend : public InferenceBackend {
         const ::google::protobuf::RepeatedPtrField<inference::ModelOutput>&
             ios);
     Status InitializeBatchOutputBindings(const inference::ModelConfig& config);
+    Status GetProfileDimensions(
+        const int io_index, const int profile_index, TensorRTContext* context);
 #ifdef TRITON_ENABLE_CUDA_GRAPH
     bool BuildCudaGraph(
         TensorRTContext* trt_context, const GraphSpec& graph_spec);
-    bool BuildCudaGraphDynamic(
+    bool BuildCudaGraphV2(
         TensorRTContext* trt_context, const GraphSpec& graph_spec);
 #endif
 
@@ -177,7 +185,8 @@ class PlanBackend : public InferenceBackend {
             context_(nullptr), cuda_graph_execs_(event_set_cnts),
             min_dims_(binding_cnts), max_dims_(binding_cnts),
             opt_dims_(binding_cnts), min_shapes_(binding_cnts),
-            max_shapes_(binding_cnts), opt_shapes_(binding_cnts)
+            max_shapes_(binding_cnts), opt_shapes_(binding_cnts),
+            is_dynamic_per_binding_(binding_cnts)
       {
       }
       std::string profile_name_;
@@ -188,6 +197,7 @@ class PlanBackend : public InferenceBackend {
       // used to capture the graph
       struct CudaGraph {
         CudaGraph() : cuda_graph_exec_(nullptr) {}
+        std::vector<int64_t> lower_bound_key_;
         // Store in the order of the bindng index
         std::vector<std::vector<int64_t>> input_dims_;
         cudaGraphExec_t cuda_graph_exec_;
@@ -221,6 +231,9 @@ class PlanBackend : public InferenceBackend {
 
       // The number of shape values
       size_t nb_shape_values_;
+
+      // Whether or not the binding contains a dynamic shape
+      std::vector<bool> is_dynamic_per_binding_;
     };
 
     // A group of CUDA events that signals different stages of the request.
@@ -245,15 +258,23 @@ class PlanBackend : public InferenceBackend {
         const std::unique_ptr<InferenceRequest>& request,
         std::map<int, std::vector<int32_t>>* request_shape_values);
 
-    std::map<int, TensorRTContext>::iterator GetMostOptimizedProfile(
+    Status GetMostOptimizedProfile(
         size_t total_batch_size,
         const std::vector<std::unique_ptr<InferenceRequest>>& requests,
-        const std::map<int, std::vector<int32_t>>& request_shape_values);
+        const std::map<int, std::vector<int32_t>>& request_shape_values,
+        std::map<int, PlanBackend::Context::TensorRTContext>::iterator* citr);
+
+    Status EvaluateTensorRTContext(
+        std::map<int, PlanBackend::Context::TensorRTContext>::iterator& citr,
+        size_t total_batch_size,
+        const std::vector<std::unique_ptr<InferenceRequest>>& requests,
+        const std::map<int, std::vector<int32_t>>& request_shape_values,
+        int64_t* error_distance);
 
     Status SetBindingDimensions(
         const std::string& input_name, const std::vector<int64_t>& shape,
-        const TensorRTContext& trt_context, const size_t binding_idx,
-        const size_t io_idx, std::vector<int64_t>* input_dims);
+        const TensorRTContext& trt_context, const size_t io_index,
+        const size_t binding_index, std::vector<int64_t>* input_dims);
     Status SetCudaGraphShape(
         TensorRTContext* trt_context, const GraphSpec& graph_spec,
         std::vector<int64_t>* cuda_graph_key,
@@ -326,9 +347,6 @@ class PlanBackend : public InferenceBackend {
     // Is set true if the configuration supports batching
     bool support_batching_;
 
-    // Is set true if the loaded model has one or more dynamic shaped inputs
-    bool is_dynamic_;
-
     // Whether inexact match is allowed for finding CUDA graph
     bool allow_inexact_match_;
 
@@ -342,18 +360,30 @@ class PlanBackend : public InferenceBackend {
 
     // The maximum possible size of the TensorRT tensor and the corresponding
     // allocated GPU buffer across all optimization
-    // profile. The array sizes are equal to Context::num_expected_bindings_
-    std::vector<uint64_t> byte_sizes_;
-    std::vector<void*> buffers_;
-    std::vector<bool> buffer_is_ragged_;
-    // Instructions on constructing the batch input and the CPU buffer for
-    // storing mutable data
+    // profile.
     using BatchInputData =
         std::pair<inference::BatchInput, std::unique_ptr<AllocatedMemory>>;
-    std::vector<std::shared_ptr<BatchInputData>> batch_inputs_;
-    // Store the pair of input name to look up and output shape
-    // for output scattering
-    std::vector<std::pair<std::string, std::vector<int64_t>>> io_shape_mapping_;
+    struct IOBindingInfo {
+      IOBindingInfo()
+          : byte_size_(0), buffer_(nullptr), buffer_is_ragged_(false),
+            is_linear_format_(true), format_element_size_(0)
+      {
+      }
+      uint64_t byte_size_;
+      void* buffer_;
+      bool buffer_is_ragged_;
+      bool is_linear_format_;
+      size_t format_element_size_;
+      // Instructions on constructing the batch input and the CPU buffer for
+      // storing mutable data
+      std::shared_ptr<BatchInputData> batch_input_;
+      // Store the pair of input name to look up and output shape
+      // for output scattering
+      std::pair<std::string, std::vector<int64_t>> io_shape_mapping_;
+    };
+
+    // The array sizes are equal to Context::num_expected_bindings_
+    std::vector<IOBindingInfo> io_binding_infos_;
 
     // The pointer to the CUDA buffer for each binding index of the TensorRT
     // engine. This is used to match the TensorRT context execution declaration

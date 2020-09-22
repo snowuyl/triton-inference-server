@@ -146,8 +146,8 @@ FROM ${TENSORFLOW2_IMAGE} AS tritonserver_tf2
 ############################################################################
 FROM ${BASE_IMAGE} AS tritonserver_build
 
-ARG TRITON_VERSION=2.3.0dev
-ARG TRITON_CONTAINER_VERSION=20.09dev
+ARG TRITON_VERSION=2.4.0dev
+ARG TRITON_CONTAINER_VERSION=20.10dev
 
 # libgoogle-glog0v5 is needed by caffe2 libraries.
 # libcurl4-openSSL-dev is needed for GCS
@@ -158,7 +158,6 @@ RUN apt-get update && \
             autoconf \
             automake \
             build-essential \
-            cmake \
             git \
             libgoogle-glog0v5 \
             libre2-dev \
@@ -188,6 +187,14 @@ RUN apt-get update && \
 # Install dependencies for protobuf code generation in Python
 RUN pip3 install --upgrade wheel setuptools && \
     pip3 install grpcio-tools
+
+# Server build requires recent version of CMake (FetchContent required)
+RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
+      gpg --dearmor - |  \
+      tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \
+    apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main' && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cmake
 
 # TensorFlow libraries. Install the monolithic libtensorflow_trtis and
 # create links from libtensorflow_framework.so and
@@ -318,6 +325,10 @@ COPY --from=tritonserver_onnx /workspace/build/Release/testdata/custom_op_librar
 # - Need to find CUDA stubs if they are available since some backends
 # may need to link against them. This is identical to the logic in TF
 # container nvbuild.sh
+ARG TRITON_COMMON_REPO_TAG=main
+ARG TRITON_CORE_REPO_TAG=main
+ARG TRITON_BACKEND_REPO_TAG=main
+
 RUN LIBCUDA_FOUND=$(ldconfig -p | grep -v compat | awk '{print $1}' | grep libcuda.so | wc -l) && \
     if [[ "$LIBCUDA_FOUND" -eq 0 ]]; then \
         export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64/stubs; \
@@ -326,6 +337,9 @@ RUN LIBCUDA_FOUND=$(ldconfig -p | grep -v compat | awk '{print $1}' | grep libcu
     rm -fr builddir && mkdir -p builddir && \
     (cd builddir && \
             cmake -DCMAKE_BUILD_TYPE=Release \
+                  -DTRITON_COMMON_REPO_TAG=${TRITON_COMMON_REPO_TAG} \
+                  -DTRITON_CORE_REPO_TAG=${TRITON_CORE_REPO_TAG} \
+                  -DTRITON_BACKEND_REPO_TAG=${TRITON_BACKEND_REPO_TAG} \
                   -DTRITON_ENABLE_GRPC=ON \
                   -DTRITON_ENABLE_HTTP=ON \
                   -DTRITON_ENABLE_METRICS=ON \
@@ -342,23 +356,109 @@ RUN LIBCUDA_FOUND=$(ldconfig -p | grep -v compat | awk '{print $1}' | grep libcu
                   -DTRITON_ENABLE_ONNXRUNTIME_TENSORRT=ON \
                   -DTRITON_ENABLE_ONNXRUNTIME_OPENVINO=ON \
                   -DTRITON_ENABLE_PYTORCH=ON \
-                  -DTRITON_ENABLE_PYTHON=ON \
                   -DTRITON_ENABLE_ENSEMBLE=ON \
                   -DTRITON_ONNXRUNTIME_INCLUDE_PATHS="/opt/tritonserver/include/onnxruntime" \
                   -DTRITON_PYTORCH_INCLUDE_PATHS="/opt/tritonserver/include/torch;/opt/tritonserver/include/torch/torch/csrc/api/include;/opt/tritonserver/include/torchvision;/usr/include/python3.6" \
-                  -DTRITON_EXTRA_LIB_PATHS="/opt/tritonserver/lib;/opt/tritonserver/backends/tensorflow1;/opt/tritonserver/backends/tensorflow2;/opt/tritonserver/lib/pytorch;/opt/tritonserver/backends/onnxruntime" \
+                  -DTRITON_EXTRA_LIB_PATHS="/opt/tritonserver/lib;/opt/tritonserver/backends/tensorflow1;/opt/tritonserver/backends/tensorflow2;/opt/tritonserver/lib/pytorch" \
                   ../build && \
             make -j16 server && \
             mkdir -p /opt/tritonserver/include && \
             cp -r server/install/bin /opt/tritonserver/. && \
             cp -r server/install/lib /opt/tritonserver/. && \
-            cp -r server/install/backends /opt/tritonserver/. && \
-            cp -r server/install/include /opt/tritonserver/include/tritonserver) && \
-    (cd /opt/tritonserver && ln -sf /workspace/qa qa) && \
-    (cd /opt/tritonserver/lib && chmod ugo-w+rx *) && \
-    (cd /opt/tritonserver/backends && chmod ugo-w+rx *) && \
-    (cd /opt/tritonserver/lib/pytorch && chmod ugo-w+rx *) && \
-    (cd /opt/tritonserver/backends/onnxruntime && chmod ugo-w+rx *)
+            cp -r server/install/include/triton /opt/tritonserver/include/.) && \
+    (cd /opt/tritonserver && ln -sf /workspace/qa qa)
+
+# Build the backends.
+#
+ARG TRITON_EXAMPLE_BACKEND_TAG=main
+RUN for BE in identity repeat square; do \
+        rm -fr /tmp/triton_backends && mkdir -p /tmp/triton_backends && \
+            (cd /tmp/triton_backends && \
+                 git clone --single-branch --depth=1 -b ${TRITON_EXAMPLE_BACKEND_TAG} \
+                     https://github.com/triton-inference-server/${BE}_backend.git) && \
+            (cd /tmp/triton_backends/${BE}_backend && \
+                 mkdir build && cd build && \
+                 cmake -DCMAKE_BUILD_TYPE=Release \
+                       -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+                       -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG} \
+                       -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG} \
+                       -DTRITON_BACKEND_REPO_TAG:STRING=${TRITON_BACKEND_REPO_TAG} .. && \
+                 make -j16 install && \
+                 mkdir -p /opt/tritonserver/backends && \
+                 cp -r install/backends/${BE} /opt/tritonserver/backends/.); \
+    done
+
+ARG TRITON_ONNXRUNTIME_BACKEND_TAG=main
+RUN rm -fr /tmp/triton_backends && mkdir -p /tmp/triton_backends && \
+    (cd /tmp/triton_backends && \
+         git clone --single-branch --depth=1 -b ${TRITON_ONNXRUNTIME_BACKEND_TAG} \
+             https://github.com/triton-inference-server/onnxruntime_backend.git) && \
+    (cd /tmp/triton_backends/onnxruntime_backend && \
+         mkdir build && cd build && \
+         cmake -DCMAKE_BUILD_TYPE=Release \
+               -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+               -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG} \
+               -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG} \
+               -DTRITON_BACKEND_REPO_TAG:STRING=${TRITON_BACKEND_REPO_TAG} \
+               -DTRITON_ENABLE_ONNXRUNTIME_TENSORRT=ON \
+               -DTRITON_ENABLE_ONNXRUNTIME_OPENVINO=ON \
+               -DTRITON_ONNXRUNTIME_INCLUDE_PATHS="/opt/tritonserver/include/onnxruntime" \
+               -DTRITON_ONNXRUNTIME_LIB_PATHS="/opt/tritonserver/backends/onnxruntime" .. && \
+         make -j16 install && \
+         mkdir -p /opt/tritonserver/backends && \
+         cp -r install/backends/onnxruntime /opt/tritonserver/backends/.)
+
+ARG TRITON_TENSORFLOW1_BACKEND_TAG=main
+RUN rm -fr /tmp/triton_backends && mkdir -p /tmp/triton_backends && \
+    (cd /tmp/triton_backends && \
+         git clone --single-branch --depth=1 -b ${TRITON_TENSORFLOW1_BACKEND_TAG} \
+             https://github.com/triton-inference-server/tensorflow_backend.git) && \
+    (cd /tmp/triton_backends/tensorflow_backend && \
+         mkdir build && cd build && \
+         cmake -DCMAKE_BUILD_TYPE=Release \
+               -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+               -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG} \
+               -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG} \
+               -DTRITON_BACKEND_REPO_TAG:STRING=${TRITON_BACKEND_REPO_TAG} \
+               -DTRITON_TENSORFLOW_VERSION="1" .. \
+               -DTRITON_TENSORFLOW_LIB_PATHS="/opt/tritonserver/backends/tensorflow1" .. && \
+         make -j16 install && \
+         mkdir -p /opt/tritonserver/backends && \
+         cp -r install/backends/tensorflow1 /opt/tritonserver/backends/.)
+
+ARG TRITON_TENSORFLOW2_BACKEND_TAG=main
+RUN rm -fr /tmp/triton_backends && mkdir -p /tmp/triton_backends && \
+    (cd /tmp/triton_backends && \
+         git clone --single-branch --depth=1 -b ${TRITON_TENSORFLOW2_BACKEND_TAG} \
+             https://github.com/triton-inference-server/tensorflow_backend.git) && \
+    (cd /tmp/triton_backends/tensorflow_backend && \
+         mkdir build && cd build && \
+         cmake -DCMAKE_BUILD_TYPE=Release \
+               -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+               -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG} \
+               -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG} \
+               -DTRITON_BACKEND_REPO_TAG:STRING=${TRITON_BACKEND_REPO_TAG} \
+               -DTRITON_TENSORFLOW_VERSION="2" .. \
+               -DTRITON_TENSORFLOW_LIB_PATHS="/opt/tritonserver/backends/tensorflow2" .. && \
+         make -j16 install && \
+         mkdir -p /opt/tritonserver/backends && \
+         cp -r install/backends/tensorflow2 /opt/tritonserver/backends/.)
+
+ARG TRITON_PYTHON_BACKEND_TAG=main
+RUN rm -fr /tmp/triton_backends && mkdir -p /tmp/triton_backends && \
+    (cd /tmp/triton_backends && \
+         git clone --single-branch --depth=1 -b ${TRITON_PYTHON_BACKEND_TAG} \
+             https://github.com/triton-inference-server/python_backend.git) && \
+    (cd /tmp/triton_backends/python_backend && \
+         mkdir build && cd build && \
+         cmake -DCMAKE_BUILD_TYPE=Release \
+               -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install \
+               -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG} \
+               -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG} \
+               -DTRITON_BACKEND_REPO_TAG:STRING=${TRITON_BACKEND_REPO_TAG} .. && \
+         make -j16 install && \
+         mkdir -p /opt/tritonserver/backends && \
+         cp -r install/backends/python /opt/tritonserver/backends/.)
 
 ENV TRITON_SERVER_VERSION ${TRITON_VERSION}
 ENV NVIDIA_TRITON_SERVER_VERSION ${TRITON_CONTAINER_VERSION}
@@ -374,8 +474,8 @@ ENTRYPOINT ["/opt/tritonserver/nvidia_entrypoint.sh"]
 ############################################################################
 FROM ${BASE_IMAGE}
 
-ARG TRITON_VERSION=2.3.0dev
-ARG TRITON_CONTAINER_VERSION=20.09dev
+ARG TRITON_VERSION=2.4.0dev
+ARG TRITON_CONTAINER_VERSION=20.10dev
 
 ENV TRITON_SERVER_VERSION ${TRITON_VERSION}
 ENV NVIDIA_TRITON_SERVER_VERSION ${TRITON_CONTAINER_VERSION}
@@ -442,8 +542,6 @@ COPY --chown=1000:1000 --from=tritonserver_pytorch /opt/pytorch/pytorch/LICENSE 
 COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/bin/tritonserver bin/
 COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/lib lib
 COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/backends backends
-COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/include/tritonserver/tritonserver.h include/
-
 
 # Get ONNX version supported
 COPY --chown=1000:1000 --from=tritonserver_onnx /workspace/ort_onnx_version.txt ort_onnx_version.txt
@@ -466,3 +564,4 @@ ENV NVIDIA_BUILD_ID ${NVIDIA_BUILD_ID:-<unknown>}
 LABEL com.nvidia.build.id="${NVIDIA_BUILD_ID}"
 ARG NVIDIA_BUILD_REF
 LABEL com.nvidia.build.ref="${NVIDIA_BUILD_REF}"
+
