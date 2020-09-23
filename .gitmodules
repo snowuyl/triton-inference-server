@@ -1,6 +1,6 @@
 [submodule "triton/core"]
 	path = triton/core
-	url = git@github.com:triton-inference-server/core.git
+	url = https://github.com/triton-inference-server/core.git
 [submodule "triton/common"]
 	path = triton/common
 	url = https://github.com/triton-inference-server/common.git
