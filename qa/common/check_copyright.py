@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 #
@@ -36,7 +36,6 @@ SKIP_EXTS = ('jpeg', 'jpg', 'pgm', 'png', 'log', 'serverlog', 'preprocessed',
 SKIP_PATHS = (
     'builddir', 'build/libevhtp', 'build/onnxruntime',
     'deploy/single_server/.helmignore', 'docs/examples/model_repository',
-    'docs/examples/ensemble_model_repository',
     'qa/common/cuda_op_kernel.cu.cc.patch',
     'qa/custom_models/custom_float32_float32_float32/output0_labels.txt',
     'qa/custom_models/custom_nobatch_float32_float32_float32/output0_labels.txt',
@@ -47,6 +46,7 @@ SKIP_PATHS = (
     'qa/ensemble_models/mix_ensemble_int32_float32_float32/output0_labels.txt',
     'qa/ensemble_models/wrong_label_int32_float32_float32/output0_labels.txt',
     'qa/ensemble_models/label_override_int32_float32_float32/output0_labels.txt',
+    'qa/ensemble_models/image_preprocess_ensemble_example/inception_graphdef/inception_labels.txt',
     'qa/L0_custom_image_preprocess/preprocessed_mug_image',
     'qa/L0_model_config/noautofill_platform',
     'qa/L0_model_config/autofill_noplatform',

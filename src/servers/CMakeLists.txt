@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.18)
 
 #
 # grpc endpoint
@@ -293,6 +293,49 @@ install(
 )
 
 #
+# multi_server
+#
+set(
+  MULTISERVER_SRCS
+  multi_server.cc
+)
+
+add_executable(
+  multi_server
+  ${MULTISERVER_SRCS}
+  $<TARGET_OBJECTS:proto-library>
+)
+set_target_properties(
+  multi_server
+  PROPERTIES
+    COMPILE_FLAGS "-Wno-type-limits"
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_link_libraries(
+  multi_server
+  PRIVATE triton-core-serverapi   # from repo-core
+  PRIVATE tritonserver
+  PRIVATE protobuf::libprotobuf
+  )
+
+if(${TRITON_ENABLE_GPU})
+target_include_directories(multi_server PRIVATE ${CUDA_INCLUDE_DIRS})
+target_link_libraries(
+  multi_server
+  PUBLIC -L/usr/local/cuda/lib64/stubs
+  PUBLIC -lnvidia-ml
+  PRIVATE ${CUDA_LIBRARIES}
+)
+endif() # TRITON_ENABLE_GPU
+install(
+  TARGETS multi_server
+  RUNTIME DESTINATION bin
+)
+
+#
 # memory_alloc
 #
 if(${TRITON_ENABLE_GPU})
@@ -344,9 +387,6 @@ endif() # TRITON_ENABLE_TENSORFLOW
 if(${TRITON_ENABLE_TENSORRT})
   set(BACKEND_OBJS ${BACKEND_OBJS} $<TARGET_OBJECTS:tensorrt-backend-library>)
 endif() # TRITON_ENABLE_TENSORRT
-if(${TRITON_ENABLE_CAFFE2})
-  set(BACKEND_OBJS ${BACKEND_OBJS} $<TARGET_OBJECTS:caffe2-backend-library>)
-endif() # TRITON_ENABLE_CAFFE2
 if(${TRITON_ENABLE_ONNXRUNTIME})
   set(BACKEND_OBJS ${BACKEND_OBJS} $<TARGET_OBJECTS:onnxruntime-backend-library>)
 endif() # TRITON_ENABLE_ONNXRUNTIME
@@ -393,6 +433,7 @@ target_link_libraries(
   PRIVATE triton-core-backendapi
   PRIVATE triton-core-serverapi
   PRIVATE triton-common-json
+  PRIVATE triton-common-table-printer
   PRIVATE ${TRITON_EXTRA_LDFLAGS}
   PRIVATE protobuf::libprotobuf
 )
@@ -404,28 +445,6 @@ if(${TRITON_ENABLE_TENSORRT})
     PUBLIC -lnvinfer_plugin
   )
 endif() # TRITON_ENABLE_TENSORRT
-
-if(${TRITON_ENABLE_CAFFE2} OR ${TRITON_ENABLE_PYTORCH})
-  target_link_libraries(
-    tritonserver
-    PUBLIC ${TRITON_EXTRA_LDFLAGS}
-    PUBLIC -ltorch
-    PUBLIC -ltorch_cpu
-    PUBLIC -ltorch_cuda
-    PUBLIC -ltorchvision
-    PUBLIC -lcaffe2_detectron_ops_gpu
-    PUBLIC -lcaffe2_nvrtc
-    PUBLIC -lc10
-    PUBLIC -lc10_cuda
-    PUBLIC -lmkl_core
-    PUBLIC -lmkl_gnu_thread
-    PUBLIC -lmkl_avx2
-    PUBLIC -lmkl_def
-    PUBLIC -lmkl_intel_lp64
-    PUBLIC -lmkl_rt
-    PUBLIC -lmkl_vml_def
-  )
-endif() # TRITON_ENABLE_CAFFE2 || TRITON_ENABLE_PYTORCH
 
 if(${TRITON_ENABLE_METRICS})
   find_package(prometheus-cpp CONFIG REQUIRED)
@@ -454,6 +473,17 @@ if(${TRITON_ENABLE_S3})
     PRIVATE -lre2
   )
 endif() # TRITON_ENABLE_S3
+
+if(${TRITON_ENABLE_AZURE_STORAGE})
+  target_link_libraries(
+    tritonserver
+    PRIVATE -L${azure-storage-cpplite_DIR}/lib
+    PRIVATE -lazure-storage-lite
+    PRIVATE -lre2
+    PRIVATE -luuid
+    PRIVATE -lcurl
+  )
+endif() # TRITON_ENABLE_AZURE_STORAGE
 
 if(${TRITON_ENABLE_GPU})
   target_link_libraries(

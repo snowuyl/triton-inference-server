@@ -530,6 +530,11 @@ CustomBackend::Context::Run(
   // send any responses and so send an error response and releasee
   // each request.
   if (err != 0) {
+    // response may be created if the custom backend calls GetOutput()
+    // on the output. In this case, a different response for error will
+    // be sent and thus the response in 'work_io_contexts' needs to be released
+    // explicitly to ensure its lifecycle ends properly.
+    work_io_contexts.clear();
     InferenceRequest::RespondIfError(
         requests,
         Status(
@@ -576,8 +581,21 @@ CustomBackend::Context::Run(
     if (custom_payloads[i].error_code == 0) {
       GetInputOutputContext* ocontext = static_cast<GetInputOutputContext*>(
           custom_payloads[i].output_context);
-      // response may not be created if the custom backend doesn't call
-      // GetOutput() on the output
+      if (!base->DecoupledTransactionPolicy()) {
+        // response may not be created if the custom backend doesn't call
+        // GetOutput() on the output. If the backend is not configured with
+        // decoupled transaction policy then create an empty response.
+        if (ocontext->response_ == nullptr) {
+          InferenceRequest* request = ocontext->request_;
+          Status status =
+              request->ResponseFactory().CreateResponse(&ocontext->response_);
+          if (!status.IsOk()) {
+            LOG_VERBOSE(1) << "failed to create response: "
+                           << status.AsString();
+          }
+        }
+      }
+
       if (ocontext->response_ != nullptr) {
         LOG_STATUS_ERROR(
             InferenceResponse::Send(
