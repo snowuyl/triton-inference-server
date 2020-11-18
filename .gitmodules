@@ -4,3 +4,24 @@
 [submodule "triton/common"]
 	path = triton/common
 	url = https://github.com/triton-inference-server/common.git
+[submodule "triton/pytorch_backend"]
+	path = triton/pytorch_backend
+	url = https://github.com/triton-inference-server/pytorch_backend.git
+[submodule "triton/python_backend"]
+	path = triton/python_backend
+	url = https://github.com/triton-inference-server/python_backend.git
+[submodule "triton/dali_backend"]
+	path = triton/dali_backend
+	url = https://github.com/triton-inference-server/dali_backend.git
+[submodule "triton/backend"]
+	path = triton/backend
+	url = https://github.com/triton-inference-server/backend.git
+[submodule "triton/third_party"]
+	path = triton/third_party
+	url = https://github.com/triton-inference-server/third_party.git
+[submodule "triton/identity_backend"]
+	path = triton/identity_backend
+	url = https://github.com/triton-inference-server/identity_backend.git
+[submodule "triton/tensorflow_backend"]
+	path = triton/tensorflow_backend
+	url = https://github.com/triton-inference-server/tensorflow_backend.git
