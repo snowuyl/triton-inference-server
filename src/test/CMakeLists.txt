@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.18)
 
 #
 # caffe2plan
@@ -143,3 +143,72 @@ install(
   TARGETS memory_test
   RUNTIME DESTINATION bin
 )
+
+#
+# RateLimiter
+#
+protobuf_generate_cpp(MODEL_CONFIG_PROTO_SRC MODEL_CONFIG_PROTO_HDR ../core/model_config.proto)
+
+set(
+  RATE_LIMITER_SRCS
+  ../core/rate_limiter.cc
+  ../core/status.cc
+)
+
+set(
+  RATE_LIMITER_HDRS
+  ../core/rate_limiter.h
+  ${MODEL_CONFIG_PROTO_HDR}
+)
+
+set(
+  RATE_LIMITER_TEST_SRCS
+  rate_limiter_test.cc
+  ${RATE_LIMITER_SRCS}
+)
+
+set(
+  RATE_LIMITER_TEST_HDRS
+  ${RATE_LIMITER_HDRS}
+)
+
+add_executable(
+  rate_limiter_test
+  ${RATE_LIMITER_TEST_SRCS}
+  ${RATE_LIMITER_TEST_HDRS}
+  $<TARGET_OBJECTS:proto-library>
+)
+set_target_properties(
+  rate_limiter_test
+  PROPERTIES
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_include_directories(
+  rate_limiter_test
+  PRIVATE ${GTEST_INCLUDE_DIR}
+)
+if(${TRITON_ENABLE_GPU})
+  target_include_directories(rate_limiter_test PRIVATE ${CUDA_INCLUDE_DIRS})
+endif() # TRITON_ENABLE_GPU
+target_link_libraries(
+  rate_limiter_test
+  PRIVATE triton-core-serverapi  # from repo-core
+  PRIVATE ${GTEST_LIBRARY}
+  PRIVATE ${GTEST_MAIN_LIBRARY}
+  PRIVATE protobuf::libprotobuf
+)
+install(
+  TARGETS rate_limiter_test
+  RUNTIME DESTINATION bin
+)
+
+add_subdirectory(custom/sdk custom/sdk)
+add_subdirectory(custom/addsub custom/addsub)
+add_subdirectory(custom/identity custom/identity)
+add_subdirectory(custom/image_preprocess custom/image_preprocess)
+add_subdirectory(custom/param custom/param)
+add_subdirectory(custom/sequence custom/sequence)
+add_subdirectory(custom/dyna_sequence custom/dyna_sequence)

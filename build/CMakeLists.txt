@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.18)
 project (triton-inference-server)
 
 include(CMakeDependentOption)
@@ -34,7 +34,6 @@ include(GNUInstallDirs)
 # Backends
 option(TRITON_ENABLE_TENSORRT "Include TensorRT backend in server" OFF)
 option(TRITON_ENABLE_TENSORFLOW "Include TensorFlow backend in server" OFF)
-option(TRITON_ENABLE_CAFFE2 "Include Caffe2 backend in server" OFF)
 option(TRITON_ENABLE_ONNXRUNTIME "Include ONNXRuntime backend in server" OFF)
 option(TRITON_ENABLE_ONNXRUNTIME_TENSORRT
   "Enable TensorRT execution provider for ONNXRuntime backend in server" OFF)
@@ -54,6 +53,7 @@ option(TRITON_ENABLE_METRICS_GPU "Include GPU metrics support in server" ON)
 # Cloud storage
 option(TRITON_ENABLE_GCS "Include GCS Filesystem support in server" OFF)
 option(TRITON_ENABLE_S3 "Include S3 Filesystem support in server" OFF)
+option(TRITON_ENABLE_AZURE_STORAGE "Include Azure Storage Filesystem support in server" OFF)
 
 # Multiple paths may be specified by separating them with semicolon
 set(TRITON_ONNXRUNTIME_INCLUDE_PATHS "" CACHE PATH "Paths to ONNXRuntime includes")
@@ -262,6 +262,8 @@ ExternalProject_Add(libevhtp
   PATCH_COMMAND sed -i "s/LibEvent/Libevent/g" ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/CMakeLists.txt
   COMMAND patch -i ${CMAKE_SOURCE_DIR}/libevhtp/evhtp.c.patch ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/evhtp.c
   COMMAND patch -i ${CMAKE_SOURCE_DIR}/libevhtp/evhtp.h.patch ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/include/evhtp/evhtp.h
+  COMMAND patch -i ${CMAKE_SOURCE_DIR}/libevhtp/thread.c.patch ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/thread.c
+  COMMAND patch -i ${CMAKE_SOURCE_DIR}/libevhtp/thread.h.patch ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/include/evhtp/thread.h
   COMMAND patch -i ${CMAKE_SOURCE_DIR}/libevhtp/config.h.in.patch ${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp/include/evhtp/config.h.in
   SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libevhtp/src/libevhtp"
   CMAKE_CACHE_ARGS
@@ -337,6 +339,24 @@ ExternalProject_Add(google-cloud-cpp
 )
 
 #
+# Build azure-storage-cpplite 
+#
+ExternalProject_Add(azure-storage-cpplite
+  PREFIX azure-storage-cpplite
+  GIT_REPOSITORY "https://github.com/Azure/azure-storage-cpplite.git"
+  GIT_TAG "v0.3.0"
+  SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/azure-storage-cpplite/src/azure-storage-cpplite"
+  CMAKE_CACHE_ARGS
+    -DBUILD_SHARED_LIBS:BOOL=OFF
+    -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
+    -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
+    -DCURL_INCLUDE_DIR=${CMAKE_CURRENT_BINARY_DIR}/curl/install/include
+    -DCURL_LIBRARY=${CMAKE_CURRENT_BINARY_DIR}/curl/install/lib
+    -DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_CURRENT_BINARY_DIR}/azure-storage-cpplite/install
+  DEPENDS curl
+)
+
+#
 # Build CNMeM (CUDA memeory management library)
 #
 ExternalProject_Add(cnmem
@@ -382,6 +402,9 @@ ExternalProject_Add(test-util
   BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/test-util"
   BUILD_ALWAYS 1
   CMAKE_CACHE_ARGS
+    -DProtobuf_DIR:PATH=${_FINDPACKAGE_PROTOBUF_CONFIG_DIR}
+    -DGTEST_ROOT:PATH=${CMAKE_CURRENT_BINARY_DIR}/googletest
+    -DCNMEM_PATH:PATH=${CMAKE_CURRENT_BINARY_DIR}/cnmem
     -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG}
     -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG}
     -DTRITON_ENABLE_GPU:BOOL=${TRITON_ENABLE_GPU}
@@ -389,38 +412,7 @@ ExternalProject_Add(test-util
     -DTRITON_ENABLE_TENSORRT:BOOL=${TRITON_ENABLE_TENSORRT}
     -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
     -DCMAKE_INSTALL_PREFIX:PATH=${TRITON_TEST_UTILS_INSTALL_PREFIX}
-    -DGTEST_ROOT:PATH=${CMAKE_CURRENT_BINARY_DIR}/googletest
-    -DProtobuf_DIR:PATH=${_FINDPACKAGE_PROTOBUF_CONFIG_DIR}
-    -DCNMEM_PATH:PATH=${CMAKE_CURRENT_BINARY_DIR}/cnmem
-  DEPENDS protobuf googletest
-)
-
-#
-# Build example custom backends
-#
-if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(TRITON_CUSTOM_BACKENDS_INSTALL_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/custom-backend/install)
-else()
-  set(TRITON_CUSTOM_BACKENDS_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
-endif()
-
-ExternalProject_Add(custom-backend
-  PREFIX custom-backend
-  SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/custom-backend"
-  BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/custom-backend"
-  BUILD_ALWAYS 1
-  CMAKE_CACHE_ARGS
-    -DProtobuf_DIR:PATH=${_FINDPACKAGE_PROTOBUF_CONFIG_DIR}
-    -Dc-ares_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/c-ares/lib/cmake/c-ares
-    ${_CMAKE_ARGS_OPENSSL_ROOT_DIR}
-    -DgRPC_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/grpc/lib/cmake/grpc
-    -DTRITON_COMMON_REPO_TAG:STRING=${TRITON_COMMON_REPO_TAG}
-    -DTRITON_CORE_REPO_TAG:STRING=${TRITON_CORE_REPO_TAG}
-    -DTRITON_ENABLE_GPU:BOOL=${TRITON_ENABLE_GPU}
-    -DTRITON_MIN_COMPUTE_CAPABILITY:STRING=${TRITON_MIN_COMPUTE_CAPABILITY}
-    -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
-    -DCMAKE_INSTALL_PREFIX:PATH=${TRITON_CUSTOM_BACKENDS_INSTALL_PREFIX}
-  DEPENDS protobuf grpc
+  DEPENDS protobuf googletest cnmem
 )
 
 #
@@ -481,6 +473,9 @@ endif() # TRITON_ENABLE_GCS
 if(${TRITON_ENABLE_S3})
   set(TRITON_DEPENDS ${TRITON_DEPENDS} aws-sdk-cpp)
 endif() # TRITON_ENABLE_S3
+if(${TRITON_ENABLE_AZURE_STORAGE})
+  set(TRITON_DEPENDS ${TRITON_DEPENDS} azure-storage-cpplite)
+endif() # TRITON_ENABLE_AZURE_STORAGE
 if(${TRITON_ENABLE_HTTP} OR ${TRITON_ENABLE_METRICS})
   set(TRITON_DEPENDS ${TRITON_DEPENDS} libevent libevhtp)
 endif() # TRITON_ENABLE_HTTP || TRITON_ENABLE_METRICS
@@ -508,6 +503,7 @@ ExternalProject_Add(server
     -Dlibevhtp_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/libevhtp/install/lib/cmake/libevhtp
     -Dprometheus-cpp_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/prometheus-cpp/install/lib/cmake/prometheus-cpp
     -Dstorage_client_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/google-cloud-cpp/install/lib/cmake/storage_client
+    -Dazure-storage-cpplite_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/azure-storage-cpplite/install
     -Dgoogle_cloud_cpp_common_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/google-cloud-cpp/install/lib/cmake/google_cloud_cpp_common
     -DCrc32c_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/crc32c/lib/cmake/Crc32c
     -DAWSSDK_DIR:PATH=${CMAKE_CURRENT_BINARY_DIR}/aws-sdk-cpp/install/lib/cmake/AWSSDK
@@ -535,11 +531,11 @@ ExternalProject_Add(server
     -DTRITON_ENABLE_METRICS:BOOL=${TRITON_ENABLE_METRICS}
     -DTRITON_ENABLE_METRICS_GPU:BOOL=${TRITON_ENABLE_METRICS_GPU}
     -DTRITON_ENABLE_GCS:BOOL=${TRITON_ENABLE_GCS}
+    -DTRITON_ENABLE_AZURE_STORAGE:BOOL=${TRITON_ENABLE_AZURE_STORAGE}
     -DTRITON_ENABLE_S3:BOOL=${TRITON_ENABLE_S3}
     -DTRITON_ENABLE_TENSORFLOW:BOOL=${TRITON_ENABLE_TENSORFLOW}
     -DTRITON_ENABLE_PYTHON:BOOL=${TRITON_ENABLE_PYTHON}
     -DTRITON_ENABLE_TENSORRT:BOOL=${TRITON_ENABLE_TENSORRT}
-    -DTRITON_ENABLE_CAFFE2:BOOL=${TRITON_ENABLE_CAFFE2}
     -DTRITON_ENABLE_ONNXRUNTIME:BOOL=${TRITON_ENABLE_ONNXRUNTIME}
     -DTRITON_ENABLE_ONNXRUNTIME_TENSORRT:BOOL=${TRITON_ENABLE_ONNXRUNTIME_TENSORRT}
     -DTRITON_ENABLE_ONNXRUNTIME_OPENVINO:BOOL=${TRITON_ENABLE_ONNXRUNTIME_OPENVINO}

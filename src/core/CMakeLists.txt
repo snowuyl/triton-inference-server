@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.18)
 
 #
 # Protobuf
@@ -235,10 +235,18 @@ if(${TRITON_ENABLE_S3})
   )
 endif() # TRITON_ENABLE_S3
 
+if(${TRITON_ENABLE_AZURE_STORAGE})
+  target_include_directories(
+    server-library
+    PRIVATE ${azure-storage-cpplite_DIR}/include
+  )
+endif() # TRITON_ENABLE_AZURE_STORAGE
+
 target_link_libraries(
   server-library
   PUBLIC
-    triton-core-backendapi  # from repo-core
-    triton-core-serverapi   # from repo-core
-    triton-common-json      # from repo-common
+    triton-core-backendapi           # from repo-core
+    triton-core-serverapi            # from repo-core
+    triton-common-json               # from repo-common
+    triton-common-table-printer      # from repo-common
 )

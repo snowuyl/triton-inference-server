@@ -24,8 +24,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "triton/core/tritonserver.h"
-
 #include <string>
 #include <vector>
 #include "src/core/backend.h"
@@ -43,12 +41,14 @@
 #include "src/core/server.h"
 #include "src/core/server_message.h"
 #include "src/core/status.h"
+#include "src/core/tritonserver_apis.h"
 
 #define TRITONJSON_STATUSTYPE nvidia::inferenceserver::Status
 #define TRITONJSON_STATUSRETURN(M)        \
   return nvidia::inferenceserver::Status( \
       nvidia::inferenceserver::Status::Code::INTERNAL, (M))
 #define TRITONJSON_STATUSSUCCESS nvidia::inferenceserver::Status::Success
+#include "triton/common/table_printer.h"
 #include "triton/common/triton_json.h"
 
 namespace ni = nvidia::inferenceserver;
@@ -801,7 +801,7 @@ TRITONSERVER_InferenceTraceModelName(
 #endif  // TRITON_ENABLE_TRACING
 }
 
-TRITONSERVER_EXPORT TRITONSERVER_Error*
+TRITONSERVER_Error*
 TRITONSERVER_InferenceTraceModelVersion(
     TRITONSERVER_InferenceTrace* trace, int64_t* model_version)
 {
@@ -1535,6 +1535,90 @@ TRITONSERVER_ServerNew(
       loptions->TensorFlowGpuMemoryFraction());
 
   ni::Status status = lserver->Init();
+  std::vector<std::string> options_headers;
+  options_headers.emplace_back("Option");
+  options_headers.emplace_back("Value");
+
+  triton::common::TablePrinter options_table(options_headers);
+  options_table.InsertRow(std::vector<std::string>{"server_id", lserver->Id()});
+  options_table.InsertRow(
+      std::vector<std::string>{"server_version", lserver->Version()});
+
+  auto extensions = lserver->Extensions();
+  std::string exts;
+  for (const auto& ext : extensions) {
+    exts.append(ext);
+    exts.append(" ");
+  }
+
+  // Remove the trailing space
+  if (exts.size() > 0)
+    exts.pop_back();
+
+  options_table.InsertRow(std::vector<std::string>{"server_extensions", exts});
+
+  size_t i = 0;
+  for (const auto& model_repository_path : lserver->ModelRepositoryPaths()) {
+    options_table.InsertRow(std::vector<std::string>{
+        "model_repository_path[" + std::to_string(i) + "]",
+        model_repository_path});
+    ++i;
+  }
+
+  std::string model_control_mode;
+  auto control_mode = lserver->GetModelControlMode();
+  switch (control_mode) {
+    case ni::ModelControlMode::MODE_NONE: {
+      model_control_mode = "MODE_NONE";
+      break;
+    }
+    case ni::ModelControlMode::MODE_POLL: {
+      model_control_mode = "MODE_POLL";
+      break;
+    }
+    case ni::ModelControlMode::MODE_EXPLICIT: {
+      model_control_mode = "MODE_EXPLICIT";
+      break;
+    }
+    default: {
+      model_control_mode = "<unknown>";
+    }
+  }
+  options_table.InsertRow(
+      std::vector<std::string>{"model_control_mode", model_control_mode});
+
+  i = 0;
+  for (const auto& startup_model : lserver->StartupModels()) {
+    options_table.InsertRow(std::vector<std::string>{
+        "startup_models_" + std::to_string(i), startup_model});
+    ++i;
+  }
+  options_table.InsertRow(std::vector<std::string>{
+      "strict_model_config",
+      std::to_string(lserver->StrictModelConfigEnabled())});
+  options_table.InsertRow(std::vector<std::string>{
+      "pinned_memory_pool_byte_size",
+      std::to_string(lserver->PinnedMemoryPoolByteSize())});
+  for (const auto& cuda_memory_pool : lserver->CudaMemoryPoolByteSize()) {
+    options_table.InsertRow(std::vector<std::string>{
+        "cuda_memory_pool_byte_size{" + std::to_string(cuda_memory_pool.first) +
+            "}",
+        std::to_string(cuda_memory_pool.second)});
+  }
+  std::stringstream compute_capability_ss;
+  compute_capability_ss.setf(std::ios::fixed);
+  compute_capability_ss.precision(1);
+  compute_capability_ss << lserver->MinSupportedComputeCapability();
+  options_table.InsertRow(std::vector<std::string>{
+      "min_supported_compute_capability", compute_capability_ss.str()});
+  options_table.InsertRow(std::vector<std::string>{
+      "strict_readiness", std::to_string(lserver->StrictReadinessEnabled())});
+  options_table.InsertRow(std::vector<std::string>{
+      "exit_timeout", std::to_string(lserver->ExitTimeoutSeconds())});
+
+  std::string options_table_string = options_table.PrintTable();
+  LOG_INFO << options_table_string;
+
   if (!status.IsOk()) {
     if (loptions->ExitOnError()) {
       lserver->Stop(true /* force */);

@@ -650,6 +650,11 @@ GetNormalizedModelConfig(
       config->set_backend(kOnnxRuntimeBackend);
     }
 #endif  // TRITON_ENABLE_ONNXRUNTIME
+#ifdef TRITON_ENABLE_PYTORCH
+    if (config->platform() == kPyTorchLibTorchPlatform) {
+      config->set_backend(kPyTorchBackend);
+    }
+#endif  // TRITON_ENABLE_PYTORCH
     // FIXME: "else if ()" other supported frameworks once they are ported
     // to use backend API.
   }
@@ -666,6 +671,11 @@ GetNormalizedModelConfig(
       config->set_platform(kOnnxRuntimeOnnxPlatform);
     }
 #endif  // TRITON_ENABLE_ONNXRUNTIME
+#ifdef TRITON_ENABLE_PYTORCH
+    if (config->backend() == kPyTorchBackend) {
+      config->set_platform(kPyTorchLibTorchPlatform);
+    }
+#endif  // TRITON_ENABLE_PYTORCH
   }
 
   // If 'default_model_filename' is not specified set it appropriately
@@ -683,11 +693,6 @@ GetNormalizedModelConfig(
       config->set_default_model_filename(kTensorRTPlanFilename);
     } else
 #endif  // TRITON_ENABLE_TENSORRT
-#ifdef TRITON_ENABLE_CAFFE2
-        if (config->platform() == kCaffe2NetDefPlatform) {
-      config->set_default_model_filename(kCaffe2NetDefFilename);
-    } else
-#endif  // TRITON_ENABLE_CAFFE2
 #ifdef TRITON_ENABLE_ONNXRUNTIME
         if (config->platform() == kOnnxRuntimeOnnxPlatform) {
       config->set_default_model_filename(kOnnxRuntimeOnnxFilename);
@@ -727,19 +732,14 @@ GetNormalizedModelConfig(
 
   // If dynamic batching is specified...
   if (config->has_dynamic_batching()) {
-    // If preferred batch size is not specified choose
-    // automatically. For now we just choose 4, 8, and max batch size
-    // as those are generally good values for GPUs.
+    // If preferred batch size is not specified set it to
+    // max-batch-size.
     if (config->dynamic_batching().preferred_batch_size().size() == 0) {
-      auto mutable_preferred_batch_sie =
+      auto mutable_preferred_batch_size =
           config->mutable_dynamic_batching()->mutable_preferred_batch_size();
-      if (config->max_batch_size() > 4) {
-        mutable_preferred_batch_sie->Add(4);
+      if (config->max_batch_size() > 0) {
+        mutable_preferred_batch_size->Add(config->max_batch_size());
       }
-      if (config->max_batch_size() > 8) {
-        mutable_preferred_batch_sie->Add(8);
-      }
-      mutable_preferred_batch_sie->Add(config->max_batch_size());
     }
   }
 
@@ -752,21 +752,17 @@ GetNormalizedModelConfig(
     }
 
     if (config->sequence_batching().has_oldest()) {
-      // If preferred batch size is not specified choose
-      // automatically. For now we just choose 4, 8, and max batch size
-      // as those are generally good values for GPUs.
+      // If preferred batch size is not specified set it to
+      // max-batch-size.
       if (config->sequence_batching().oldest().preferred_batch_size().size() ==
           0) {
-        auto mutable_preferred_batch_sie = config->mutable_sequence_batching()
-                                               ->mutable_oldest()
-                                               ->mutable_preferred_batch_size();
-        if (config->max_batch_size() > 4) {
-          mutable_preferred_batch_sie->Add(4);
+        auto mutable_preferred_batch_size =
+            config->mutable_sequence_batching()
+                ->mutable_oldest()
+                ->mutable_preferred_batch_size();
+        if (config->max_batch_size() > 0) {
+          mutable_preferred_batch_size->Add(config->max_batch_size());
         }
-        if (config->max_batch_size() > 8) {
-          mutable_preferred_batch_sie->Add(8);
-        }
-        mutable_preferred_batch_sie->Add(config->max_batch_size());
       }
     }
   }
@@ -1188,6 +1184,21 @@ ValidateModelConfig(
         }
       }
     }
+
+    // If direct strategy is enabled make sure the minimum slot utilization is
+    // in range (0.0, 1.0]
+    if (config.sequence_batching().has_direct()) {
+      if ((config.sequence_batching().direct().minimum_slot_utilization() <
+           0.0) ||
+          (config.sequence_batching().direct().minimum_slot_utilization() >
+           1.0)) {
+        return Status(
+            Status::Code::INVALID_ARG,
+            "sequence batching minimum slot utilization must be in range "
+            "(0.0, 1.0] for " +
+                config.name());
+      }
+    }
   }
 
   // If ensemble scheduling is specified, validate it.  Otherwise,
@@ -1572,6 +1583,7 @@ ValidateModelConfigInt64()
       "microseconds",
       "ModelConfig::dynamic_batching::priority_queue_policy::value::default_"
       "timeout_microseconds",
+      "ModelConfig::sequence_batching::direct::max_queue_delay_microseconds",
       "ModelConfig::sequence_batching::oldest::max_queue_delay_microseconds",
       "ModelConfig::sequence_batching::max_sequence_idle_microseconds",
       "ModelConfig::ensemble_scheduling::step::model_version",
@@ -1769,6 +1781,7 @@ ModelConfigToJson(
   }
 
   // Fix sequence_batching::oldest::max_queue_delay_microseconds,
+  // sequence_batching::direct::max_queue_delay_microseconds,
   // sequence_batching::max_sequence_idle_microseconds
   {
     triton::common::TritonJson::Value sb;
@@ -1779,6 +1792,11 @@ ModelConfigToJson(
       if (sb.Find("oldest", &oldest)) {
         RETURN_IF_ERROR(
             FixInt(config_json, oldest, "max_queue_delay_microseconds"));
+      }
+      triton::common::TritonJson::Value direct;
+      if (sb.Find("direct", &direct)) {
+        RETURN_IF_ERROR(
+            FixInt(config_json, direct, "max_queue_delay_microseconds"));
       }
     }
   }

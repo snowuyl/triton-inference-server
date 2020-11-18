@@ -24,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required (VERSION 3.5)
+cmake_minimum_required (VERSION 3.18)
 
 add_subdirectory(tritonclient)
 
@@ -45,14 +45,12 @@ endif() # NOT WIN32
 
 configure_file(../../../../VERSION VERSION COPYONLY)
 configure_file(LICENSE.txt LICENSE.txt COPYONLY)
-configure_file(README.md README.md COPYONLY)
 configure_file(setup.py setup.py COPYONLY)
 file(COPY requirements DESTINATION .)
 
 set(WHEEL_DEPENDS 
       ${CMAKE_CURRENT_BINARY_DIR}/VERSION
       ${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt
-      ${CMAKE_CURRENT_BINARY_DIR}/README.md
       ${CMAKE_CURRENT_BINARY_DIR}/setup.py
 )
 
@@ -91,44 +89,44 @@ add_custom_target(
 )
 
 #
-# x86-Linux specific Wheel file
+# Linux specific Wheel file. Compatible with x86, x64 and aarch64
 #
 if (NOT WIN32)
-  # Can genereate x86-linux specific wheel file on
+  # Can genereate linux specific wheel file on
   # linux systems only.
-  set(X86LINUX_WHEEL_DEPENDS
+  set(LINUX_WHEEL_DEPENDS
         cshm
         ${WHEEL_DEPENDS}
   )
   if(NOT ${TRITON_CLIENT_SKIP_EXAMPLES})
     set(X86LINUX_WHEEL_DEPENDS
-        perf_client
+        perf_analyzer
         ${X86LINUX_WHEEL_DEPENDS}
     )
   endif() # TRITON_CLIENT_SKIP_EXAMPLES
 
   if(${TRITON_ENABLE_GPU})
-    set(X86LINUX_WHEEL_DEPENDS
+    set(LINUX_WHEEL_DEPENDS
           ccudashm
-          ${X86LINUX_WHEEL_DEPENDS}
+          ${LINUX_WHEEL_DEPENDS}
     )
   endif() # TRITON_ENABLE_GPU
 
-  set(x86_linux_wheel_stamp_file "x86_linux_stamp.whl")
+  set(linux_wheel_stamp_file "linux_stamp.whl")
   add_custom_command(
-    OUTPUT "${x86_linux_wheel_stamp_file}"
+    OUTPUT "${linux_wheel_stamp_file}"
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/build_wheel.sh"
     ARGS
-      "${CMAKE_CURRENT_BINARY_DIR}/x86_linux/"
+      "${CMAKE_CURRENT_BINARY_DIR}/linux/"
       "true"
-      ${CMAKE_CURRENT_BINARY_DIR}/../../c++/perf_client/perf_client
+      ${CMAKE_CURRENT_BINARY_DIR}/../../c++/perf_analyzer/perf_analyzer
     DEPENDS ${X86LINUX_WHEEL_DEPENDS}
   )
 
   add_custom_target(
-    x86-linux-client-wheel ALL
+    linux-client-wheel ALL
     DEPENDS
-      "${x86_linux_wheel_stamp_file}"
+      "${linux_wheel_stamp_file}"
   )
 endif() # NOT WIN32
 
@@ -140,7 +138,7 @@ if(${TRITON_ENABLE_GRPC})
 
   if (NOT WIN32)
     add_dependencies(
-      x86-linux-client-wheel
+      linux-client-wheel
       model-config-library grpc-library proto-library
   )
   endif() # NOT WIN32
@@ -164,7 +162,7 @@ install(
 
 if (NOT WIN32)
   install(
-    CODE "file(GLOB _Wheel \"${CMAKE_CURRENT_BINARY_DIR}/x86_linux/triton*.whl\")"
+    CODE "file(GLOB _Wheel \"${CMAKE_CURRENT_BINARY_DIR}/linux/triton*.whl\")"
     CODE "file(INSTALL \${_Wheel} DESTINATION \"${CMAKE_INSTALL_PREFIX}/python\")"
   )
 endif() # NOT WIN32
