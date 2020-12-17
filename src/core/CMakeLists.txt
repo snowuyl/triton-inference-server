@@ -114,7 +114,9 @@ endif() # TRITON_ENABLE_GPU
 if(${TRITON_ENABLE_GCS})
   find_package(storage_client REQUIRED)
   message(STATUS "Using google-cloud-cpp ${storage_client_VERSION}")
+if (NOT WIN32)
   set_source_files_properties(filesystem.cc PROPERTIES COMPILE_FLAGS -Wno-missing-field-initializers)
+endif() # NOT WIN32
 endif() # TRITON_ENABLE_GCS
 
 if(${TRITON_ENABLE_S3})
@@ -128,6 +130,7 @@ set(
   backend.cc
   backend_context.cc
   cuda_utils.cc
+  async_work_queue.cc
   dynamic_batch_scheduler.cc
   ensemble_scheduler.cc
   ensemble_utils.cc
@@ -142,6 +145,7 @@ set(
   metrics.cc
   model_config_utils.cc
   model_repository_manager.cc
+  persistent_backend_manager.cc
   pinned_memory_manager.cc
   scheduler_utils.cc
   sequence_batch_scheduler.cc
@@ -159,6 +163,7 @@ set(
   backend_context.h
   constants.h
   cuda_utils.h
+  async_work_queue.h
   dynamic_batch_scheduler.h
   ensemble_scheduler.h
   ensemble_utils.h
@@ -174,6 +179,7 @@ set(
   model_config_utils.h
   model_repository_manager.h
   nvtx.h
+  persistent_backend_manager.h
   pinned_memory_manager.h
   response_allocator.h
   sync_queue.h

@@ -35,11 +35,12 @@ The Triton Inference Server is available as [buildable source
 
 ## Install Triton Docker Image
 
-Before you can use the Triton Docker image you must install and
-nvidia-docker.  For DGX users, see [Preparing to use NVIDIA
-Containers](http://docs.nvidia.com/deeplearning/dgx/preparing-containers/index.html),
-For users other than DGX, see the [nvidia-docker installation
-documentation](https://github.com/NVIDIA/nvidia-docker).
+Before you can use the Triton Docker image you must install
+[Docker](https://docs.docker.com/engine/install). If you plan on using
+a GPU for inference you must also install the [NVIDIA Container
+Toolkit](https://github.com/NVIDIA/nvidia-docker). DGX users should
+follow [Preparing to use NVIDIA
+Containers](http://docs.nvidia.com/deeplearning/dgx/preparing-containers/index.html).
 
 Pull the image using the following command.
 
@@ -72,8 +73,10 @@ you can use the same Triton Docker image.
 ### Run on System with GPUs
 
 Use the following command to run Triton with the example model
-repository you just created. The --gpus=1 flag indicates that 1 system
-GPU should be made available to Triton for inferencing.
+repository you just created. The [NVIDIA Container
+Toolkit](https://github.com/NVIDIA/nvidia-docker) must be installed
+for Docker to recognize the GPU(s). The --gpus=1 flag indicates that 1
+system GPU should be made available to Triton for inferencing.
 
 ```
 $ docker run --gpus=1 --rm -p8000:8000 -p8001:8001 -p8002:8002 -v/full/path/to/docs/examples/model_repository:/models nvcr.io/nvidia/tritonserver:<xx.yy>-py3 tritonserver --model-repository=/models
@@ -86,10 +89,21 @@ see output like the following, Triton is ready to accept inference
 requests.
 
 ```
++----------------------+---------+--------+
+| Model                | Version | Status |
++----------------------+---------+--------+
+| <model_name>         | <v>     | READY  |
+| ..                   | .       | ..     |
+| ..                   | .       | ..     |
++----------------------+---------+--------+
+...
+...
+...
 I1002 21:58:57.891440 62 grpc_server.cc:3914] Started GRPCInferenceService at 0.0.0.0:8001
 I1002 21:58:57.893177 62 http_server.cc:2717] Started HTTPService at 0.0.0.0:8000
 I1002 21:58:57.935518 62 http_server.cc:2736] Started Metrics Service at 0.0.0.0:8002
 ```
+All the models should show "READY" status to indicate that they loaded correctly. If a model fails to load the status will report the failure and a reason for the failure. If your model is not displayed in the table check the path to the model repository and your CUDA drivers.
 
 ### Run on CPU-Only System
 
@@ -128,19 +142,19 @@ Use docker pull to get the client libraries and examples image
 from NGC.
 
 ```
-$ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
+$ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-sdk
 ```
 
 Where <xx.yy> is the version that you want to pull. Run the client
 image.
 
 ```
-$ docker run -it --rm --net=host nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
+$ docker run -it --rm --net=host nvcr.io/nvidia/tritonserver:<xx.yy>-py3-sdk
 ```
 
 ## Running The Image Classification Example
 
-From within the nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
+From within the nvcr.io/nvidia/tritonserver:<xx.yy>-py3-sdk
 image, run the example image-client application to perform image
 classification using the example densenet_onnx model.
 

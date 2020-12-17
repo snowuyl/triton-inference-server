@@ -444,12 +444,12 @@ LoadManager::PrepareInfer(InferContext* ctx)
     // Set input shape before getting the input data
     std::vector<int64_t> shape;
     RETURN_IF_ERROR(data_loader_->GetInputShape(input.second, 0, 0, &shape));
-    if (!shape.empty()) {
-      if ((parser_->MaxBatchSize() != 0) && (!input.second.is_shape_tensor_)) {
-        shape.insert(shape.begin(), (int64_t)batch_size_);
-      }
-    } else {
+    if (shape.empty() && (backend_->Kind() == cb::BackendKind::TRITON)) {
       return cb::Error("unable to set shape for the input");
+    }
+
+    if ((parser_->MaxBatchSize() != 0) && (!input.second.is_shape_tensor_)) {
+      shape.insert(shape.begin(), (int64_t)batch_size_);
     }
 
     cb::InferInput* infer_input;
@@ -461,9 +461,11 @@ LoadManager::PrepareInfer(InferContext* ctx)
     RETURN_IF_ERROR(data_loader_->GetInputData(
         input.second, 0, 0, &data_ptr, &batch1_bytesize));
 
-    size_t max_count = (parser_->MaxBatchSize() == 0) ? 1 : batch_size_;
-    for (size_t i = 0; i < max_count; ++i) {
-      RETURN_IF_ERROR(infer_input->AppendRaw(data_ptr, batch1_bytesize));
+    if (!shape.empty()) {
+      size_t max_count = (parser_->MaxBatchSize() == 0) ? 1 : batch_size_;
+      for (size_t i = 0; i < max_count; ++i) {
+        RETURN_IF_ERROR(infer_input->AppendRaw(data_ptr, batch1_bytesize));
+      }
     }
   }
 
@@ -657,6 +659,20 @@ LoadManager::SetInputsSharedMemory(
         region_name, shared_memory_regions_[region_name].second));
   }
   return cb::Error::Success;
+}
+
+void
+LoadManager::SetInferSequenceOptions(
+    const uint32_t seq_id, std::unique_ptr<cb::InferOptions>& options)
+{
+  options->sequence_start_ = (sequence_stat_[seq_id]->remaining_queries_ == 0);
+  options->sequence_end_ = (sequence_stat_[seq_id]->remaining_queries_ == 1);
+
+  // New sequence must be intialized before setting the id.
+  if (options->sequence_start_) {
+    InitNewSequence(seq_id);
+  }
+  options->sequence_id_ = sequence_stat_[seq_id]->seq_id_;
 }
 
 void

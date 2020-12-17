@@ -56,7 +56,7 @@ from distutils.dir_util import copy_tree
 #      ORT version,
 #      ORT openvino version
 #     )
-TRITON_VERSION_MAP = {'2.6.0dev': ('20.12dev', '20.10', '1.5.3', '2020.4')}
+TRITON_VERSION_MAP = {'2.7.0dev': ('21.01dev', '20.11', '1.5.3', '2020.4')}
 
 EXAMPLE_BACKENDS = ['identity', 'square', 'repeat']
 CORE_BACKENDS = ['tensorrt', 'custom', 'ensemble']
@@ -190,7 +190,9 @@ def core_cmake_args(components, backends, install_dir):
         '-DCMAKE_INSTALL_PREFIX:PATH={}'.format(install_dir),
         '-DTRITON_COMMON_REPO_TAG:STRING={}'.format(components['common']),
         '-DTRITON_CORE_REPO_TAG:STRING={}'.format(components['core']),
-        '-DTRITON_BACKEND_REPO_TAG:STRING={}'.format(components['backend'])
+        '-DTRITON_BACKEND_REPO_TAG:STRING={}'.format(components['backend']),
+        '-DTRITON_THIRD_PARTY_REPO_TAG:STRING={}'.format(
+            components['thirdparty'])
     ]
 
     cargs.append('-DTRITON_ENABLE_LOGGING:BOOL={}'.format(
@@ -360,7 +362,7 @@ RUN (conda uninstall -y pytorch || true) && \
     pip uninstall -y torch
 RUN cd pytorch && \
     python setup.py clean && \
-    TORCH_CUDA_ARCH_LIST="5.2 6.0 6.1 7.0 7.5 8.0+PTX" \
+    TORCH_CUDA_ARCH_LIST="5.2 6.0 6.1 7.0 7.5 8.0 8.6+PTX" \
     CUDA_HOME="/usr/local/cuda" \
     CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
     USE_DISTRIBUTED=OFF USE_OPENMP=OFF USE_NCCL=OFF USE_SYSTEM_NCCL=OFF \
@@ -385,7 +387,7 @@ WORKDIR /workspace
 ENV PATH /usr/local/nvidia/bin:/usr/local/cuda/bin:/workspace/cmake-3.14.3-Linux-x86_64/bin:/opt/miniconda/bin:$PATH
 ENV LD_LIBRARY_PATH /opt/miniconda/lib:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
-# The Onnx Runtime dockerfile is the collection of steps in 
+# The Onnx Runtime dockerfile is the collection of steps in
 # https://github.com/microsoft/onnxruntime/tree/v1.5.1/dockerfiles
 
 # Install common dependencies
@@ -414,7 +416,7 @@ ENV LANG en_US.UTF-8
 RUN wget https://apt.repos.intel.com/openvino/2020/GPG-PUB-KEY-INTEL-OPENVINO-2020 && \
     apt-key add GPG-PUB-KEY-INTEL-OPENVINO-2020 && rm GPG-PUB-KEY-INTEL-OPENVINO-2020 && \
     cd /etc/apt/sources.list.d && \
-    echo "deb https://apt.repos.intel.com/openvino/2020 all main">intel-openvino-2020.list && \ 
+    echo "deb https://apt.repos.intel.com/openvino/2020 all main">intel-openvino-2020.list && \
     apt update && \
     apt -y install intel-openvino-dev-ubuntu18-${ONNX_RUNTIME_OPENVINO_VERSION}.287
 # Text replacement to skip installing CMake via distribution
@@ -502,7 +504,7 @@ RUN apt-get update && \
             wget \
             zlib1g-dev \
             pkg-config \
-            uuid-dev && \       
+            uuid-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # grpcio-tools grpcio-channelz are needed by python backend
@@ -582,6 +584,8 @@ COPY --from=tritonserver_onnx /workspace/onnxruntime/LICENSE \
 COPY --from=tritonserver_onnx /workspace/ort_onnx_version.txt \
      /opt/tritonserver/backends/onnxruntime/
 COPY --from=tritonserver_onnx /workspace/build/Release/onnxruntime_perf_test \
+     /opt/tritonserver/backends/onnxruntime/
+COPY --from=tritonserver_onnx /workspace/build/Release/onnx_test_runner \
      /opt/tritonserver/backends/onnxruntime/
 RUN cd /opt/tritonserver/backends/onnxruntime && \
     ln -sf libonnxruntime.so.${ONNX_RUNTIME_VERSION} libonnxruntime.so
@@ -681,12 +685,6 @@ LABEL com.nvidia.tritonserver.version="${{TRITON_SERVER_VERSION}}"
 ENV PATH /opt/tritonserver/bin:${{PATH}}
 '''.format(argmap['TRITON_VERSION'], argmap['TRITON_CONTAINER_VERSION'],
            argmap['BASE_IMAGE'])
-    if 'pytorch' in backends:
-        df += '''
-# Need to include pytorch in LD_LIBRARY_PATH since Torchvision loads custom
-# ops from that path
-ENV LD_LIBRARY_PATH /opt/tritonserver/backends/pytorch/:$LD_LIBRARY_PATH
-'''
     df += '''
 ENV TF_ADJUST_HUE_FUSED         1
 ENV TF_ADJUST_SATURATION_FUSED  1
@@ -704,23 +702,29 @@ RUN userdel tensorrt-server > /dev/null 2>&1 || true && \
     [ `id -u $TRITON_SERVER_USER` -eq 1000 ] && \
     [ `id -g $TRITON_SERVER_USER` -eq 1000 ]
 
-# libcurl is needed for GCS
-#
-# FIXME python3, python3-pip and the pip installs should only be
-# installed for python backend and onnxruntime backend (and then only
-# if openvino is enabled)
+# Common dependencies. FIXME (can any of these be conditional? For
+# example libcurl only needed for GCS?)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
          libb64-0d \
          libcurl4-openssl-dev \
-         libre2-4 \
+         libre2-4 && \
+    rm -rf /var/lib/apt/lists/*
+'''
+    # Add dependencies needed for python backend
+    if 'python' in backends:
+        df += '''
+# python3, python3-pip and some pip installs required for the python backend
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
          python3 \
          python3-pip && \
     pip3 install --upgrade pip && \
     pip3 install --upgrade wheel setuptools && \
     pip3 install --upgrade grpcio-tools grpcio-channelz numpy && \
     rm -rf /var/lib/apt/lists/*
-
+'''
+    df += '''
 WORKDIR /opt/tritonserver
 RUN rm -fr /opt/tritonserver/*
 COPY --chown=1000:1000 LICENSE .
@@ -730,15 +734,13 @@ COPY --chown=1000:1000 --from=tritonserver_build /tmp/tritonbuild/install/lib/li
 '''
     if 'pytorch' in backends:
         df += '''
-COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/backends/pytorch/* backends/pytorch/
+COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/backends/pytorch backends/pytorch
 '''
     if 'onnxruntime' in backends:
         df += '''
-COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/backends/onnxruntime/* backends/onnxruntime/
+COPY --chown=1000:1000 --from=tritonserver_build /opt/tritonserver/backends/onnxruntime backends/onnxruntime
 '''
 
-    # Only need the backends directory if we built some non-core
-    # backends.
     for noncore in NONCORE_BACKENDS:
         if noncore in backends:
             df += '''
@@ -1231,7 +1233,12 @@ if __name__ == '__main__':
         FLAGS.build_parallel = multiprocessing.cpu_count() * 2
 
     # Initialize map of common components and repo-tag for each.
-    components = {'common': 'main', 'core': 'main', 'backend': 'main'}
+    components = {
+        'common': 'main',
+        'core': 'main',
+        'backend': 'main',
+        'thirdparty': 'main'
+    }
     for be in FLAGS.repo_tag:
         parts = be.split(':')
         fail_if(
@@ -1239,7 +1246,7 @@ if __name__ == '__main__':
             '--repo-tag must specific <component-name>:<repo-tag>')
         fail_if(
             parts[0] not in components,
-            '--repo-tag <component-name> must be "common", "core", or "backend"'
+            '--repo-tag <component-name> must be "common", "core", "backend", or "thirdparty"'
         )
         components[parts[0]] = parts[1]
     for c in components:

@@ -35,6 +35,7 @@
 
 #include "src/core/model_config.pb.h"
 #include "src/core/model_repository_manager.h"
+#include "src/core/persistent_backend_manager.h"
 #include "src/core/status.h"
 
 namespace nvidia { namespace inferenceserver {
@@ -97,9 +98,6 @@ class InferenceServer {
   Status ModelReadyVersions(
       std::map<std::string, std::vector<int64_t>>* model_versions);
 
-  // Print backends and models summary
-  Status PrintBackendAndModelSummary();
-
   /// Get the index of all models in all repositories.
   /// \param ready_only If true return only index of models that are ready.
   /// \param index Returns the index.
@@ -119,6 +117,9 @@ class InferenceServer {
 
   // Unload the corresponding model.
   Status UnloadModel(const std::string& model_name);
+
+  // Print backends and models summary
+  Status PrintBackendAndModelSummary();
 
   // Return the server version.
   const std::string& Version() const { return version_; }
@@ -189,6 +190,11 @@ class InferenceServer {
   int32_t ExitTimeoutSeconds() const { return exit_timeout_secs_; }
   void SetExitTimeoutSeconds(int32_t s) { exit_timeout_secs_ = std::max(0, s); }
 
+  void SetBufferManagerThreadCount(unsigned int c)
+  {
+    buffer_manager_thread_count_ = c;
+  }
+
   // Set a backend command-line configuration
   void SetBackendCmdlineConfig(const BackendCmdlineConfigMap& bc)
   {
@@ -235,6 +241,7 @@ class InferenceServer {
   bool strict_model_config_;
   bool strict_readiness_;
   uint32_t exit_timeout_secs_;
+  uint32_t buffer_manager_thread_count_;
   uint64_t pinned_memory_pool_size_;
   std::map<int, uint64_t> cuda_memory_pool_size_;
   double min_supported_compute_capability_;
@@ -255,6 +262,7 @@ class InferenceServer {
   std::atomic<uint64_t> inflight_request_counter_;
 
   std::unique_ptr<ModelRepositoryManager> model_repository_manager_;
+  std::shared_ptr<PersistentBackendManager> persist_backend_manager_;
 };
 
 }}  // namespace nvidia::inferenceserver

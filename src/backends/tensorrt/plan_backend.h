@@ -332,7 +332,10 @@ class PlanBackend : public InferenceBackend {
       std::vector<std::unique_ptr<InferenceRequest>> requests_;
       // All the generated InferenceResponse objects
       std::vector<std::unique_ptr<InferenceResponse>> responses_;
-      // Responder of the payload
+      // The collector and responder of the payload, need to extend
+      // their lifetime to match the payload to ensure content is intact
+      // until the end of execution.
+      std::unique_ptr<BackendInputCollector> collector_;
       std::unique_ptr<BackendResponder> responder_;
     };
 
@@ -362,16 +365,20 @@ class PlanBackend : public InferenceBackend {
     // allocated GPU buffer across all optimization
     // profile.
     using BatchInputData =
-        std::pair<inference::BatchInput, std::unique_ptr<AllocatedMemory>>;
+        std::pair<inference::BatchInput, std::unique_ptr<MutableMemory>>;
     struct IOBindingInfo {
       IOBindingInfo()
-          : byte_size_(0), buffer_(nullptr), buffer_is_ragged_(false),
-            is_linear_format_(true), vectorized_dim_(-1),
-            components_per_element_(1)
+          : byte_size_(0), buffer_(nullptr), device_buffer_(nullptr),
+            memory_type_(TRITONSERVER_MEMORY_GPU), memory_type_id_(0),
+            buffer_is_ragged_(false), is_linear_format_(true),
+            vectorized_dim_(-1), components_per_element_(1)
       {
       }
       uint64_t byte_size_;
       void* buffer_;
+      void* device_buffer_;
+      TRITONSERVER_MemoryType memory_type_;
+      int64_t memory_type_id_;
       bool buffer_is_ragged_;
       bool is_linear_format_;
       int vectorized_dim_;

@@ -24,9 +24,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#ifndef _WIN32
 #include <getopt.h>
-#include <stdint.h>
 #include <unistd.h>
+#endif
+#include <stdint.h>
 #include <algorithm>
 #include <cctype>
 #include <condition_variable>
@@ -117,6 +119,70 @@ int grpc_infer_allocation_pool_size_ = 8;
 int http_thread_cnt_ = 8;
 #endif  // TRITON_ENABLE_HTTP
 
+#ifdef _WIN32
+// Minimum implementation of <getopt.h> for Windows
+#define required_argument 1
+#define no_argument 2
+
+int optind = 1;
+const char* optarg = nullptr;
+
+struct option {
+  option(const char* name, int has_arg, int* flag, int val)
+      : name_(name), has_arg_(has_arg), flag_(flag), val_(val)
+  {
+  }
+  const char* name_;
+  int has_arg_;
+  int* flag_;
+  int val_;
+};
+
+bool
+end_of_long_opts(const struct option* longopts)
+{
+  return (
+      (longopts->name_ == nullptr) && (longopts->has_arg_ == 0) &&
+      (longopts->flag_ == nullptr) && (longopts->val_ == 0));
+}
+
+int
+getopt_long(
+    int argc, char* const argv[], const char* optstring,
+    const struct option* longopts, int* longindex)
+{
+  if ((longindex != NULL) || (optind >= argc)) {
+    return -1;
+  }
+  const struct option* curr_longopt = longopts;
+  std::string argv_str = argv[optind];
+  size_t found = argv_str.find_first_of("=");
+  std::string key = argv_str.substr(
+      2, (found == std::string::npos) ? std::string::npos : (found - 2));
+  while (!end_of_long_opts(curr_longopt)) {
+    if (key == curr_longopt->name_) {
+      if (curr_longopt->has_arg_ == required_argument) {
+        if (found == std::string::npos) {
+          optind++;
+          if (optind >= argc) {
+            std::cerr << argv[0] << ": option '" << argv_str
+                      << "' requires an argument" << std::endl;
+            return '?';
+          }
+          optarg = argv[optind];
+        } else {
+          optarg = (argv[optind] + found + 1);
+        }
+      }
+      optind++;
+      return curr_longopt->val_;
+    }
+    curr_longopt++;
+  }
+  return -1;
+}
+#endif
+
 // Command-line options
 enum OptionId {
   OPTION_HELP = 1000,
@@ -163,6 +229,7 @@ enum OptionId {
   OPTION_MIN_SUPPORTED_COMPUTE_CAPABILITY,
   OPTION_EXIT_TIMEOUT_SECS,
   OPTION_BACKEND_DIR,
+  OPTION_BUFFER_MANAGER_THREAD_COUNT,
   OPTION_BACKEND_CONFIG
 };
 
@@ -324,6 +391,10 @@ std::vector<Option> options_
       {OPTION_BACKEND_DIR, "backend-directory", Option::ArgStr,
        "The global directory searched for backend shared libraries. Default is "
        "'/opt/tritonserver/backends'."},
+      {OPTION_BUFFER_MANAGER_THREAD_COUNT, "buffer-manager-thread-count",
+       Option::ArgInt,
+       "The number of threads used to accelerate copies and other operations "
+       "required to manage input and output tensor contents. Default is 0."},
   {
     OPTION_BACKEND_CONFIG, "backend-config", "<string>,<string>=<string>",
         "Specify a backend-specific configuration setting. The format of this "
@@ -774,6 +845,7 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
   int32_t exit_timeout_secs = 30;
   int32_t repository_poll_secs = repository_poll_secs_;
   int64_t pinned_memory_pool_byte_size = 1 << 28;
+  int32_t buffer_manager_thread_count = 0;
 
   std::string backend_dir = "/opt/tritonserver/backends";
   std::vector<std::tuple<std::string, std::string, std::string>>
@@ -960,6 +1032,9 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
       case OPTION_BACKEND_DIR:
         backend_dir = optarg;
         break;
+      case OPTION_BUFFER_MANAGER_THREAD_COUNT:
+        buffer_manager_thread_count = ParseIntOption(optarg);
+        break;
       case OPTION_BACKEND_CONFIG:
         backend_config_settings.push_back(ParseBackendConfigOption(optarg));
         break;
@@ -1062,6 +1137,10 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
       TRITONSERVER_ServerOptionsSetExitTimeout(
           loptions, std::max(0, exit_timeout_secs)),
       "setting exit timeout");
+  FAIL_IF_ERR(
+      TRITONSERVER_ServerOptionsSetBufferManagerThreadCount(
+          loptions, std::max(0, buffer_manager_thread_count)),
+      "setting buffer manager thread count");
 
 #ifdef TRITON_ENABLE_LOGGING
   FAIL_IF_ERR(

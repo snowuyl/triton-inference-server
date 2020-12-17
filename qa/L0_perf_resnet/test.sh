@@ -175,3 +175,20 @@ for MODEL_NAME in $OPTIMIZED_MODEL_NAMES; do
                 bash -x run_test.sh
     done
 done
+
+# Needs this additional test configuration for comparing against TFS.
+MODEL_NAME=${TF_MODEL_NAME}
+REPO=$REPODIR/perf_model_store
+STATIC_BATCH=128
+INSTANCE_CNT=1
+CONCURRENCY=1
+FRAMEWORK=$(echo ${MODEL_NAME} | cut -d '_' -f 3)
+MODEL_NAME=${MODEL_NAME} \
+    MODEL_FRAMEWORK=${FRAMEWORK} \
+    MODEL_PATH="$REPO/${MODEL_NAME}" \
+    STATIC_BATCH=${STATIC_BATCH} \
+    PERF_CLIENT_PROTOCOL="grpc" \
+    INSTANCE_CNT=${INSTANCE_CNT} \
+    CONCURRENCY=${CONCURRENCY} \
+    BACKEND_CONFIG=" --backend-config=tensorflow,version=2" \
+    bash -x run_test.sh
