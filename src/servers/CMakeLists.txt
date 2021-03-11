@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -192,6 +192,7 @@ set(
   common.cc
   main.cc
   shared_memory_manager.cc
+  signal.cc
   ../core/logging.cc
 )
 
@@ -200,6 +201,7 @@ set(
   classification.h
   common.h
   shared_memory_manager.h
+  signal.h
   ../core/logging.h
 )
 
@@ -408,6 +410,7 @@ if(${TRITON_ENABLE_ENSEMBLE})
 endif() # TRITON_ENABLE_ENSEMBLE
 
 set(BACKEND_OBJS ${BACKEND_OBJS} $<TARGET_OBJECTS:triton-backend-library>)
+set(REPOAGENT_OBJS ${REPOAGENT_OBJS} $<TARGET_OBJECTS:triton-repoagent-library>)
 
 set(CUDA_OBJS "")
 if(${TRITON_ENABLE_GPU})
@@ -423,6 +426,7 @@ add_library(
   $<TARGET_OBJECTS:proto-library>
   ${CUDA_OBJS}
   ${BACKEND_OBJS}
+  ${REPOAGENT_OBJS}
 )
 # FIXME need to check how Windows exposes symbols
 if (WIN32)
@@ -453,6 +457,7 @@ endif()
 target_link_libraries(
   tritonserver
   PRIVATE triton-core-backendapi
+  PRIVATE triton-core-repoagentapi
   PRIVATE triton-core-serverapi
   PRIVATE triton-common-json
   PRIVATE triton-common-table-printer
@@ -516,6 +521,10 @@ if(${TRITON_ENABLE_GPU})
     PUBLIC ${CUDA_nvml_LIBRARY}
     PRIVATE ${CUDA_LIBRARIES}
     PRIVATE ${CNMEM_LIBRARY}
+  )
+  target_link_libraries(
+    tritonserver
+    PRIVATE kernel-library
   )
 endif() # TRITON_ENABLE_GPU
 

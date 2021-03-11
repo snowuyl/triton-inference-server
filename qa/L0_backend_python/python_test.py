@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -41,6 +41,7 @@ import tritonclient.http as httpclient
 
 
 class PythonTest(tu.TestResultCollector):
+
     def test_async_infer(self):
         model_name = "identity_uint8"
         request_parallelism = 4
@@ -53,7 +54,7 @@ class PythonTest(tu.TestResultCollector):
                 input_data = (16384 * np.random.randn(*shape)).astype(np.uint8)
                 input_datas.append(input_data)
                 inputs = [
-                    httpclient.InferInput("IN", input_data.shape,
+                    httpclient.InferInput("INPUT0", input_data.shape,
                                           np_to_triton_dtype(input_data.dtype))
                 ]
                 inputs[0].set_data_from_numpy(input_data)
@@ -65,8 +66,8 @@ class PythonTest(tu.TestResultCollector):
                 results = requests[i].get_result()
                 print(results)
 
-                output_data = results.as_numpy("OUT")
-                self.assertIsNotNone(output_data, "error: expected 'OUT'")
+                output_data = results.as_numpy("OUTPUT0")
+                self.assertIsNotNone(output_data, "error: expected 'OUTPUT0'")
                 self.assertTrue(
                     np.array_equal(output_data, input_datas[i]),
                     "error: expected output {} to match input {}".format(
@@ -118,6 +119,20 @@ class PythonTest(tu.TestResultCollector):
                 infer_exec_val != 1,
                 "error: expected metric {} == 1, got {}".format(
                     infer_exec_str, infer_exec_val))
+
+    def test_bool(self):
+        model_name = 'identity_bool'
+        with httpclient.InferenceServerClient("localhost:8000") as client:
+            input_data = np.array([[True, False, True]], dtype=np.bool)
+            inputs = [
+                httpclient.InferInput("INPUT0", input_data.shape,
+                                      np_to_triton_dtype(input_data.dtype))
+            ]
+            inputs[0].set_data_from_numpy(input_data)
+            result = client.infer(model_name, inputs)
+            output0 = result.as_numpy('OUTPUT0')
+            self.assertTrue(output0 is not None)
+            self.assertTrue(np.all(output0 == input_data))
 
     def test_infer_pymodel_error(self):
         model_name = "wrong_model"
@@ -177,8 +192,7 @@ class PythonTest(tu.TestResultCollector):
             except InferenceServerException as e:
                 print(e)
                 self.assertTrue(
-                    e.message().startswith(
-                        "An error occured during execution"),
+                    e.message().startswith("An error occured during execution"),
                     "Exception message is not correct")
             else:
                 self.assertTrue(
@@ -203,7 +217,7 @@ class PythonTest(tu.TestResultCollector):
 
     def test_ensemble(self):
         model_name = "ensemble"
-        shape = [4]
+        shape = [16]
         with httpclient.InferenceServerClient("localhost:8000") as client:
             input_data_0 = np.random.random(shape).astype(np.float32)
             input_data_1 = np.random.random(shape).astype(np.float32)
@@ -223,6 +237,66 @@ class PythonTest(tu.TestResultCollector):
 
             self.assertTrue(np.allclose(output0, 2 * input_data_0))
             self.assertTrue(np.allclose(output1, 2 * input_data_1))
+
+        model_name = "ensemble_gpu"
+        with httpclient.InferenceServerClient("localhost:8000") as client:
+            input_data_0 = np.random.random(shape).astype(np.float32)
+            input_data_1 = np.random.random(shape).astype(np.float32)
+            inputs = [
+                httpclient.InferInput("INPUT0", input_data_0.shape,
+                                      np_to_triton_dtype(input_data_0.dtype)),
+                httpclient.InferInput("INPUT1", input_data_1.shape,
+                                      np_to_triton_dtype(input_data_1.dtype))
+            ]
+            inputs[0].set_data_from_numpy(input_data_0)
+            inputs[1].set_data_from_numpy(input_data_1)
+            result = client.infer(model_name, inputs)
+            output0 = result.as_numpy('OUTPUT0')
+            output1 = result.as_numpy('OUTPUT1')
+            self.assertIsNotNone(output0)
+            self.assertIsNotNone(output1)
+
+            self.assertTrue(np.allclose(output0, 2 * input_data_0))
+            self.assertTrue(np.allclose(output1, 2 * input_data_1))
+
+    def test_unicode(self):
+        model_name = "string"
+        shape = [1]
+
+        for i in range(3):
+            with httpclient.InferenceServerClient("localhost:8000") as client:
+                utf8 = '😀'
+                input_data = np.array([bytes(utf8, encoding='utf-8')],
+                                      dtype=np.bytes_)
+                inputs = [
+                    httpclient.InferInput("INPUT0", shape,
+                                          np_to_triton_dtype(input_data.dtype))
+                ]
+                inputs[0].set_data_from_numpy(input_data)
+                result = client.infer(model_name, inputs)
+                output0 = result.as_numpy('OUTPUT0')
+                self.assertTrue(output0 is not None)
+                self.assertTrue(output0[0] == input_data)
+
+    def test_string(self):
+        model_name = "string_fixed"
+        shape = [1]
+
+        # Each time inference is performed with a new
+        # API
+        for i in range(3):
+            with httpclient.InferenceServerClient("localhost:8000") as client:
+                sample_input = '123456'
+                input_data = np.array([sample_input], dtype=np.object_)
+                inputs = [
+                    httpclient.InferInput("INPUT0", shape,
+                                          np_to_triton_dtype(input_data.dtype))
+                ]
+                inputs[0].set_data_from_numpy(input_data)
+                result = client.infer(model_name, inputs)
+                output0 = result.as_numpy('OUTPUT0')
+                self.assertTrue(output0 is not None)
+                self.assertTrue(output0[0] == input_data.astype(np.bytes_))
 
 
 if __name__ == '__main__':

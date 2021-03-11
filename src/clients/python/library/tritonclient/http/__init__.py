@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -1396,13 +1396,33 @@ class InferInput:
             self._parameters.pop('binary_data_size', None)
             self._raw_data = None
             if self._datatype == "BYTES":
-                self._data = [val for val in input_tensor.flatten()]
+                self._data = []
+                try:
+                    if input_tensor.size > 0:
+                        for obj in np.nditer(input_tensor, flags=["refs_ok"], order='C'):
+                            # We need to convert the object to string using utf-8,
+                            # if we want to use the binary_data=False. JSON requires
+                            # the input to be a UTF-8 string.
+                            if input_tensor.dtype == np.object_:
+                                if type(obj.item()) == bytes:
+                                    self._data.append(str(obj.item(), encoding='utf-8'))
+                                else:
+                                    self._data.append(str(obj.item()))
+                            else:
+                                self._data.append(str(obj.item(), encoding='utf-8'))
+                except UnicodeDecodeError:
+                    raise_error(f'Failed to encode "{obj.item()}" using UTF-8. Please use binary_data=True, if'
+                                ' you want to pass a byte array.')
             else:
                 self._data = [val.item() for val in input_tensor.flatten()]
         else:
             self._data = None
             if self._datatype == "BYTES":
-                self._raw_data = serialize_byte_tensor(input_tensor).tobytes()
+                serialized_output = serialize_byte_tensor(input_tensor)
+                if serialized_output.size > 0:
+                    self._raw_data = serialized_output.item()
+                else:
+                    self._raw_data = b''
             else:
                 self._raw_data = input_tensor.tobytes()
             self._parameters['binary_data_size'] = len(self._raw_data)
@@ -1571,7 +1591,11 @@ class InferResult:
             content = response.read()
             if verbose:
                 print(content)
-            self._result = json.loads(content)
+            try:
+                self._result = json.loads(content)
+            except UnicodeDecodeError as e:
+                raise_error(f'Failed to encode using UTF-8. Please use binary_data=True, if'
+                            f' you want to pass a byte array. UnicodeError: {e}')
         else:
             header_length = int(header_length)
             content = response.read(length=header_length)
@@ -1638,7 +1662,7 @@ class InferResult:
                     if not has_binary_data:
                         np_array = np.array(output['data'],
                                             dtype=triton_to_np_dtype(datatype))
-                    np_array = np.resize(np_array, output['shape'])
+                    np_array = np_array.reshape(output['shape'])
                     return np_array
         return None
 

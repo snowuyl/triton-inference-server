@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -38,3 +38,4 @@ git clone --single-branch --depth=1 -b $DALI_BACKEND_REPO_TAG https://github.com
 
 /bin/bash -x ./test_identity.sh $DALI_BACKEND_DIR
 /bin/bash -x ./test_inception_ensemble.sh $DALI_BACKEND_DIR
+/bin/bash -x ./test_multi_input.sh $DALI_BACKEND_DIR

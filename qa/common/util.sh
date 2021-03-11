@@ -210,7 +210,7 @@ function run_server_tolive () {
 }
 
 # Run inference server and return immediately. Sets SERVER_PID to pid
-# of SERVER, or 0 if error
+# of SERVER, or 0 if error.
 function run_server_nowait () {
     SERVER_PID=0
 
@@ -224,14 +224,28 @@ function run_server_nowait () {
         return
     fi
 
-    if [ -z "$SERVER_LD_PRELOAD" ]; then
-      echo "=== Running $SERVER $SERVER_ARGS"
-    else
-      echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
-    fi
+    if [[ "$(< /proc/sys/kernel/osrelease)" == *Microsoft ]]; then
+        # LD_PRELOAD not yet supported on windows
+        if [ -z "$SERVER_LD_PRELOAD" ]; then
+            echo "=== Running $SERVER $SERVER_ARGS"
+        else
+            echo "=== LD_PRELOAD not supported for windows"
+            return
+        fi
 
-    LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
-    SERVER_PID=$!
+        $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+        SERVER_PID=$!
+    else
+        # Non-windows
+        if [ -z "$SERVER_LD_PRELOAD" ]; then
+            echo "=== Running $SERVER $SERVER_ARGS"
+        else
+            echo "=== Running LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS"
+        fi
+
+        LD_PRELOAD=$SERVER_LD_PRELOAD $SERVER $SERVER_ARGS > $SERVER_LOG 2>&1 &
+        SERVER_PID=$!
+    fi
 }
 
 # Run inference server inside a memory management tool like Valgrind/ASAN.
@@ -271,6 +285,47 @@ function run_server_leakcheck () {
     fi
 }
 
+# Kill inference server. SERVER_PID must be set to the server's pid.
+function kill_server () {
+    # Under WSL the linux PID is not the same as the windows PID and
+    # there doesn't seem to be a way to find the mapping between
+    # them. So we instead assume that this test is the only test
+    # running on the system and just SIGINT all the tritonserver
+    # windows executables running on the system. At least, ideally we
+    # would like to use windows-kill to SIGINT, unfortunately that
+    # causes the entire WSL shell to just exit. So instead we must use
+    # taskkill.exe which can only forcefully kill tritonserver which
+    # means that it does not gracefully exit.
+    if [[ "$(< /proc/sys/kernel/osrelease)" == *Microsoft ]]; then
+        # Disable -x as it makes output below hard to read
+        [ -o xtrace ] && ts='set -x' || ts='set +x'
+        set +x
+        
+        tasklist=$(/mnt/c/windows/system32/tasklist.exe /FI 'IMAGENAME eq tritonserver.exe' /FO CSV)
+        echo "=== Windows tritonserver tasks"
+        echo "$tasklist"
+        
+        taskcount=$(echo "$tasklist" | grep -c tritonserver)
+        if (( $taskcount > 0 )); then
+            echo "$tasklist" | while IFS=, read -r taskname taskpid taskrest; do
+                if [[ "$taskname" == "\"tritonserver.exe\"" ]]; then
+                    taskpid="${taskpid%\"}"
+                    taskpid="${taskpid#\"}"
+                    echo "=== killing windows tritonserver.exe task $taskpid"
+                    # windows-kill.exe -SIGINT $taskpid
+                    /mnt/c/windows/system32/taskkill.exe /PID $taskpid /F /T
+                fi
+            done
+        fi
+        
+        eval "$ts"
+    else
+        # Non-windows...
+        kill $SERVER_PID
+        wait $SERVER_PID
+    fi
+}
+          
 # Run nvidia-smi to monitor GPU utilization.
 # Writes utilization into MONITOR_LOG. If MONITOR_ID is specified only
 # that GPU PCI bus ID is monitored.
@@ -349,7 +404,7 @@ function check_test_results () {
 function check_valgrind_log () {
     local valgrind_log=$1
 
-    leak_records=$(grep "are definitely lost" -A 8 $valgrind_log | awk \
+    leak_records=$(grep "are definitely lost" -A 12 $valgrind_log | awk \
     'BEGIN{RS="--";acc=0} !(/cnmem/||/tensorflow::NewSession/||/dl-init/|| \
     /dl-open/||/dlerror/||/libtorch/) \
     {print;acc+=1} END{print acc}')

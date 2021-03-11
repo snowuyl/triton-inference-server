@@ -29,12 +29,9 @@ import os
 import numpy as np
 from ctypes import *
 
-import tritongrpcclient as grpcclient
-import tritonhttpclient as httpclient
-import tritonshmutils.shared_memory as shm
-import tritonshmutils.cuda_shared_memory as cudashm
-from tritonclientutils import *
-
+import tritonclient.grpc as grpcclient
+import tritonclient.http as httpclient
+from tritonclient.utils import *
 
 def _range_repr_dtype(dtype):
     if dtype == np.float64:
@@ -43,7 +40,7 @@ def _range_repr_dtype(dtype):
         return np.int16
     elif dtype == np.float16:
         return np.int8
-    elif dtype == np.object:  # TYPE_STRING
+    elif dtype == np.object_:  # TYPE_STRING
         return np.int32
     return dtype
 
@@ -52,6 +49,12 @@ def create_set_shm_regions(input0_list, input1_list, output0_byte_size,
                            output1_byte_size, outputs, shm_region_names,
                            precreated_shm_regions, use_system_shared_memory,
                            use_cuda_shared_memory):
+    # Lazy shm imports...
+    if use_system_shared_memory:
+        import tritonclient.utils.shared_memory as shm
+    if use_cuda_shared_memory:
+        import tritonclient.utils.cuda_shared_memory as cudashm
+
     if use_system_shared_memory and use_cuda_shared_memory:
         raise ValueError(
             "Cannot set both System and CUDA shared memory flags to 1")
@@ -59,8 +62,15 @@ def create_set_shm_regions(input0_list, input1_list, output0_byte_size,
     if not (use_system_shared_memory or use_cuda_shared_memory):
         return [], []
 
-    input0_byte_size = sum([i0.nbytes for i0 in input0_list])
-    input1_byte_size = sum([i1.nbytes for i1 in input1_list])
+    if input0_list[0].dtype == np.object_:
+        input0_byte_size = sum([serialized_byte_size(i0) for i0 in input0_list])
+    else:
+        input0_byte_size = sum([i0.nbytes for i0 in input0_list])
+
+    if input1_list[0].dtype == np.object_:
+        input1_byte_size = sum([serialized_byte_size(i1) for i1 in input1_list])
+    else:
+        input1_byte_size = sum([i1.nbytes for i1 in input1_list])
 
     if shm_region_names is None:
         shm_region_names = ['input0', 'input1', 'output0', 'output1']
@@ -130,6 +140,12 @@ def register_add_shm_regions(inputs, outputs, shm_region_names,
                              output0_byte_size, output1_byte_size,
                              use_system_shared_memory, use_cuda_shared_memory,
                              triton_client):
+    # Lazy shm imports...
+    if use_system_shared_memory:
+        import tritonclient.utils.shared_memory as shm
+    if use_cuda_shared_memory:
+        import tritonclient.utils.cuda_shared_memory as cudashm
+
     if use_system_shared_memory or use_cuda_shared_memory:
         # Unregister then register required shared memory regions
         if use_system_shared_memory:
@@ -201,6 +217,12 @@ def unregister_cleanup_shm_regions(shm_regions, shm_handles,
                                    precreated_shm_regions, outputs,
                                    use_system_shared_memory,
                                    use_cuda_shared_memory):
+    # Lazy shm imports...
+    if use_system_shared_memory:
+        import tritonclient.utils.shared_memory as shm
+    if use_cuda_shared_memory:
+        import tritonclient.utils.cuda_shared_memory as cudashm
+
     if not (use_system_shared_memory or use_cuda_shared_memory):
         return None
 
@@ -244,6 +266,12 @@ def unregister_cleanup_shm_regions(shm_regions, shm_handles,
 def create_set_either_shm_region(shm_region_names, input_list, input_byte_size,
                                  output_byte_size, use_system_shared_memory,
                                  use_cuda_shared_memory):
+    # Lazy shm imports...
+    if use_system_shared_memory:
+        import tritonclient.utils.shared_memory as shm
+    if use_cuda_shared_memory:
+        import tritonclient.utils.cuda_shared_memory as cudashm
+
     if use_cuda_shared_memory and use_system_shared_memory:
         raise ValueError(
             "Cannot set both System and CUDA shared memory flags to 1")
@@ -273,6 +301,12 @@ def register_add_either_shm_regions(inputs, outputs, shm_region_prefix,
                                     shm_handles, io_num, input_byte_size,
                                     output_byte_size, use_system_shared_memory,
                                     use_cuda_shared_memory, triton_client):
+    # Lazy shm imports...
+    if use_system_shared_memory:
+        import tritonclient.utils.shared_memory as shm
+    if use_cuda_shared_memory:
+        import tritonclient.utils.cuda_shared_memory as cudashm
+
     if use_system_shared_memory or use_cuda_shared_memory:
         # Unregister then register required shared memory regions
         input_shm_name = shm_region_prefix[0] + str(io_num)

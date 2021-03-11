@@ -749,6 +749,14 @@ message ModelOptimizationPolicy
     //@@       Currently only recognized by TensorRT backend.
     //@@
     repeated GraphSpec graph_spec = 3;
+
+    //@@    .. cpp:var:: bool output_copy_stream
+    //@@
+    //@@       Uses a CUDA stream separate from the inference stream to copy the
+    //@@       output to host. Default value is false.
+    //@@       Currently only recognized by TensorRT backend.
+    //@@
+    bool output_copy_stream = 4;
   }
 
   //@@
@@ -903,6 +911,29 @@ message ModelOptimizationPolicy
   //@@     Default is true.
   //@@
   PinnedMemoryBuffer output_pinned_memory = 6;
+
+  //@@  .. cpp:var:: uint32 gather_kernel_buffer_threshold
+  //@@
+  //@@     The backend may use a gather kernel to gather input data if the
+  //@@     device has direct access to the source buffer and the destination
+  //@@     buffer. In such case, the gather kernel will be used only if the
+  //@@     number of buffers to be gathered is greater or equal to
+  //@@     the specifed value. If 0, the gather kernel will be disabled.
+  //@@     Default value is 0.
+  //@@     Currently only recognized by TensorRT backend.
+  //@@
+  uint32 gather_kernel_buffer_threshold = 7;
+
+  //@@  .. cpp:var:: bool eager_batching
+  //@@
+  //@@     Start preparing the next batch before the model instance is ready
+  //@@     for the next inference. This option can be used to overlap the
+  //@@     batch preparation with model execution, with the trade-off that
+  //@@     the next batch might be smaller than what it could have been.
+  //@@     Default value is false.
+  //@@     Currently only recognized by TensorRT backend.
+  //@@
+  bool eager_batching = 8;
 }
 
 //@@
@@ -1440,7 +1471,7 @@ message ModelWarmup
 //@@
 message ModelOperations
 {
-  //@@  .. cpp:var:: string op_library_filename
+  //@@  .. cpp:var:: string op_library_filename (repeated)
   //@@
   //@@     Optional paths of the libraries providing custom operations for
   //@@     this model. Valid only for ONNX models.
@@ -1466,6 +1497,44 @@ message ModelTransactionPolicy
   //@@     exactly one response for each request.
   //@@
   bool decoupled = 1;
+}
+
+//@@
+//@@.. cpp:var:: message ModelRepositoryAgents
+//@@
+//@@   The repository agents for the model.
+//@@
+message ModelRepositoryAgents
+{
+  //@@
+  //@@  .. cpp:var:: message Agent
+  //@@
+  //@@     A repository agent that should be invoked for the specified
+  //@@     repository actions for this model.
+  //@@
+  message Agent
+  {
+    //@@    .. cpp:var:: string name
+    //@@
+    //@@       The name of the agent.
+    //@@
+    string name = 1;
+
+    //@@    .. cpp:var:: map<string, string> parameters
+    //@@
+    //@@       The parameters for the agent.
+    //@@
+    map<string, string> parameters = 2;
+  }
+
+  //@@
+  //@@  .. cpp:var:: Agent agents (repeated)
+  //@@
+  //@@     The ordered list of agents for the model. These agents will be
+  //@@     invoked in order to respond to repository actions occuring for the
+  //@@     model.
+  //@@
+  repeated Agent agents = 1;
 }
 
 //@@
@@ -1657,4 +1726,11 @@ message ModelConfig
   //@@     to be expected from the model.
   //@@
   ModelTransactionPolicy model_transaction_policy = 19;
+
+  //@@  .. cpp:var:: ModelRepositoryAgents model_repository_agents
+  //@@
+  //@@     Optional specification of the agent(s) that should be invoked
+  //@@     with repository actions are performed for this model.
+  //@@
+  ModelRepositoryAgents model_repository_agents = 23;
 }

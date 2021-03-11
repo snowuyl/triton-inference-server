@@ -54,7 +54,8 @@ It is also possible to build build the client libraries with
 ### Download Using Python Package Installer (pip)
 
 The GRPC and HTTP client libraries are available as a Python package
-that can be installed using a recent version of pip.
+that can be installed using a recent version of pip. **Currently pip
+install is only available on Linux**.
 
 ```
 $ pip install nvidia-pyindex
@@ -79,7 +80,9 @@ The components of the install packages are:
 * utils [ linux distribution will include `shared_memory` and `cuda_shared_memory`]
 
 The Linux version of the package also includes the
-[perf_analyzer](perf_analyzer.md) binary. To run the perf_analyzer the following dependency must be installed:
+[perf_analyzer](perf_analyzer.md) binary. The perf_analyzer binary is
+built on Ubuntu 20.04 and may not run on other Linux distributions. To
+run the perf_analyzer the following dependency must be installed:
 
 ```bash
 sudo apt update
@@ -88,7 +91,8 @@ sudo apt install libb64-dev
 
 ### Download From GitHub
 
-The client libraries can be downloaded from the [Triton GitHub release
+The client libraries and the perf_analyzer executable can be
+downloaded from the [Triton GitHub release
 page](https://github.com/triton-inference-server/server/releases)
 corresponding to the release you are interested in. The client
 libraries are found in the "Assets" section of the release page in a
@@ -111,7 +115,9 @@ include/, and the Python wheel files in python/. The bin/ and python/
 directories contain the built examples that you can learn more about
 in [Examples](client_examples.md).
 
-To use the C++ libraries you must install some dependencies.
+The perf_analyzer binary is built on Ubuntu 20.04 and may not run on
+other Linux distributions. To use the C++ libraries or perf_analyzer
+executable you must install some dependencies.
 
 ```bash
 $ apt-get update
@@ -134,7 +140,7 @@ from NGC.
 $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-sdk
 ```
 
-Where <xx.yy> is the version that you want to pull. Within the
+Where \<xx.yy\> is the version that you want to pull. Within the
 container the client libraries are in /workspace/install/lib, the
 corresponding headers in /workspace/install/include, and the Python
 wheel files in /workspace/install/python. The image will also contain
@@ -150,7 +156,7 @@ under-development version). The branch you use for the client build
 should match the version of Triton you are using.
 
 ```bash
-$ git checkout r20.11
+$ git checkout r21.02
 ```
 
 Then, issue the following command to build the C++ client library and
@@ -160,11 +166,11 @@ the Python wheel files for the Python client library.
 $ docker build -t tritonserver_sdk -f Dockerfile.sdk .
 ```
 
-You can optionally add *--build-arg "BASE_IMAGE=<base_image>"* to set
+You can optionally add *--build-arg "BASE_IMAGE=\<base_image\>"* to set
 the base image that you want the client library built against. This
 base image must be an Ubuntu CUDA image to be able to build CUDA
 shared memory support. If CUDA shared memory support is not required,
-you can use Ubuntu 18.04 as the base image.
+you can use Ubuntu 20.04 as the base image.
 
 After the build completes the tritonserver_sdk docker image will
 contain the built client libraries in /workspace/install/lib, the
@@ -180,7 +186,7 @@ Note that version 3.18.4 of cmake is needed to compile the
 client. The build dependencies and requirements are shown in
 `Dockerfile.sdk`. To build without Docker you must first
 install those dependencies along with required cmake version.
-This section describes the client build for Ubuntu 18.04 and
+This section describes the client build for Ubuntu 20.04 and
 Windows 10 systems.
 
 To build the libraries using CMake, first change directory to the root
@@ -189,10 +195,10 @@ want to build (or the master branch if you want to build the
 under-development version).
 
 ```bash
-$ git checkout r20.11
+$ git checkout r21.02
 ```
 
-#### Ubuntu 18.04
+#### Ubuntu 20.04
 
 For Ubuntu, the dependencies and how to install them can be found in
 `Dockerfile.sdk`. The appropriate CUDA library must be installed
@@ -263,8 +269,8 @@ following cmake configuration.
 > cmake -G"Visual Studio 16 2019" -DTRITON_ENABLE_GPU=OFF -DTRITON_ENABLE_METRICS_GPU=OFF -DCMAKE_BUILD_TYPE=Release -DTRITON_COMMON_REPO_TAG:STRING=<tag> -DTRITON_CORE_REPO_TAG:STRING=<tag>
 ```
 
-Where <tag> is "main" if you are building the clients from the master
-branch, or <tag> is "r<x>.<y>" if you are building on a release
+Where \<tag\> is "main" if you are building the clients from the master
+branch, or \<tag\> is "r\<x\>.\<y\>" if you are building on a release
 branch.
 
 When the build completes the libraries can be found in

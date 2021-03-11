@@ -105,56 +105,6 @@ IsPathDirectory(const std::string& path, bool* is_dir)
   return Status::Success;
 }
 
-#if defined(TRITON_ENABLE_S3) || defined(TRITON_ENABLE_GCS)
-Status
-MakeTemporaryDirectory(std::string* temp_dir)
-{
-#ifdef _WIN32
-  char temp_path[MAX_PATH + 1];
-  size_t temp_path_length = GetTempPath(MAX_PATH + 1, temp_path);
-  if (temp_path_length == 0) {
-    return Status(
-        Status::Code::INTERNAL,
-        "Failed to get local directory for temporary files");
-  }
-  // There is no single operation like 'mkdtemp' in Windows, thus generating
-  // unique temporary directory is a process of getting temporary file name,
-  // deleting the file (file creation is side effect fo getting anme), creating
-  // corresponding directory, so mutex is used to avoid possible race condition.
-  // However, it doesn't prevent other process on creating temporary file and
-  // thus the race condition may still happen. One possible solution is
-  // to reserve a temporary directory for the process and generate temporary
-  // model directories inside it.
-  static std::mutex mtx;
-  std::lock_guard<std::mutex> lk(mtx);
-  // Construct a std::string as filled 'temp_path' is not C string,
-  // and so that we can reuse 'temp_path' to hold the temp file name.
-  std::string temp_path_str(temp_path, temp_path_length);
-  if (GetTempFileName(temp_path_str.c_str(), "folder", 0, temp_path) == 0) {
-    return Status(Status::Code::INTERNAL, "Failed to create local temp folder");
-  }
-  *temp_dir = temp_path;
-  DeleteFile(temp_dir->c_str());
-  if (CreateDirectory(temp_dir->c_str(), NULL) == 0) {
-    return Status(
-        Status::Code::INTERNAL,
-        "Failed to create local temp folder: " + *temp_dir);
-  }
-#else
-  std::string folder_template = "/tmp/folderXXXXXX";
-  char* res = mkdtemp(const_cast<char*>(folder_template.c_str()));
-  if (res == nullptr) {
-    return Status(
-        Status::Code::INTERNAL,
-        "Failed to create local temp folder: " + folder_template +
-            ", errno:" + strerror(errno));
-  }
-  *temp_dir = res;
-#endif
-  return Status::Success;
-}
-#endif
-
 }  // namespace
 
 LocalizedDirectory::~LocalizedDirectory()
@@ -164,27 +114,6 @@ LocalizedDirectory::~LocalizedDirectory()
         DeleteDirectory(local_path_),
         "failed to delete localized model directory");
   }
-}
-
-Status
-LocalizedDirectory::DeleteDirectory(const std::string& path)
-{
-  std::set<std::string> contents;
-  RETURN_IF_ERROR(GetDirectoryContents(path, &contents));
-
-  for (const auto& content : contents) {
-    std::string full_path = JoinPath({path, content});
-    bool is_dir = false;
-    RETURN_IF_ERROR(IsPathDirectory(full_path.c_str(), &is_dir));
-    if (is_dir) {
-      DeleteDirectory(full_path);
-    } else {
-      remove(full_path.c_str());
-    }
-  }
-  rmdir(path.c_str());
-
-  return Status::Success;
 }
 
 namespace {
@@ -208,6 +137,8 @@ class FileSystem {
       std::shared_ptr<LocalizedDirectory>* localized) = 0;
   virtual Status WriteTextFile(
       const std::string& path, const std::string& contents) = 0;
+  virtual Status MakeTemporaryDirectory(std::string* temp_dir) = 0;
+  virtual Status DeleteDirectory(const std::string& path) = 0;
 };
 
 class LocalFileSystem : public FileSystem {
@@ -228,6 +159,8 @@ class LocalFileSystem : public FileSystem {
       std::shared_ptr<LocalizedDirectory>* localized) override;
   Status WriteTextFile(
       const std::string& path, const std::string& contents) override;
+  Status MakeTemporaryDirectory(std::string* temp_dir) override;
+  Status DeleteDirectory(const std::string& path) override;
 };
 
 Status
@@ -389,6 +322,75 @@ LocalFileSystem::WriteTextFile(
   return Status::Success;
 }
 
+Status
+LocalFileSystem::MakeTemporaryDirectory(std::string* temp_dir)
+{
+#ifdef _WIN32
+  char temp_path[MAX_PATH + 1];
+  size_t temp_path_length = GetTempPath(MAX_PATH + 1, temp_path);
+  if (temp_path_length == 0) {
+    return Status(
+        Status::Code::INTERNAL,
+        "Failed to get local directory for temporary files");
+  }
+  // There is no single operation like 'mkdtemp' in Windows, thus generating
+  // unique temporary directory is a process of getting temporary file name,
+  // deleting the file (file creation is side effect fo getting name), creating
+  // corresponding directory, so mutex is used to avoid possible race condition.
+  // However, it doesn't prevent other process on creating temporary file and
+  // thus the race condition may still happen. One possible solution is
+  // to reserve a temporary directory for the process and generate temporary
+  // model directories inside it.
+  static std::mutex mtx;
+  std::lock_guard<std::mutex> lk(mtx);
+  // Construct a std::string as filled 'temp_path' is not C string,
+  // and so that we can reuse 'temp_path' to hold the temp file name.
+  std::string temp_path_str(temp_path, temp_path_length);
+  if (GetTempFileName(temp_path_str.c_str(), "folder", 0, temp_path) == 0) {
+    return Status(Status::Code::INTERNAL, "Failed to create local temp folder");
+  }
+  *temp_dir = temp_path;
+  DeleteFile(temp_dir->c_str());
+  if (CreateDirectory(temp_dir->c_str(), NULL) == 0) {
+    return Status(
+        Status::Code::INTERNAL,
+        "Failed to create local temp folder: " + *temp_dir);
+  }
+#else
+  std::string folder_template = "/tmp/folderXXXXXX";
+  char* res = mkdtemp(const_cast<char*>(folder_template.c_str()));
+  if (res == nullptr) {
+    return Status(
+        Status::Code::INTERNAL,
+        "Failed to create local temp folder: " + folder_template +
+            ", errno:" + strerror(errno));
+  }
+  *temp_dir = res;
+#endif
+  return Status::Success;
+}
+
+Status
+LocalFileSystem::DeleteDirectory(const std::string& path)
+{
+  std::set<std::string> contents;
+  RETURN_IF_ERROR(GetDirectoryContents(path, &contents));
+
+  for (const auto& content : contents) {
+    std::string full_path = JoinPath({path, content});
+    bool is_dir = false;
+    RETURN_IF_ERROR(IsDirectory(full_path, &is_dir));
+    if (is_dir) {
+      DeleteDirectory(full_path);
+    } else {
+      remove(full_path.c_str());
+    }
+  }
+  rmdir(path.c_str());
+
+  return Status::Success;
+}
+
 #if defined(TRITON_ENABLE_GCS) || defined(TRITON_ENABLE_S3) || \
     defined(TRITON_ENABLE_AZURE_STORAGE)
 // Helper function to take care of lack of trailing slashes
@@ -427,6 +429,8 @@ class GCSFileSystem : public FileSystem {
       std::shared_ptr<LocalizedDirectory>* localized) override;
   Status WriteTextFile(
       const std::string& path, const std::string& contents) override;
+  Status MakeTemporaryDirectory(std::string* temp_dir) override;
+  Status DeleteDirectory(const std::string& path) override;
 
  private:
   Status ParsePath(
@@ -699,7 +703,8 @@ GCSFileSystem::LocalizeDirectory(
   }
 
   std::string tmp_folder;
-  RETURN_IF_ERROR(MakeTemporaryDirectory(&tmp_folder));
+  RETURN_IF_ERROR(nvidia::inferenceserver::MakeTemporaryDirectory(
+      FileSystemType::LOCAL, &tmp_folder));
 
   localized->reset(new LocalizedDirectory(path, tmp_folder));
 
@@ -777,6 +782,22 @@ GCSFileSystem::WriteTextFile(
       "Write text file operation not yet implemented " + path);
 }
 
+Status
+GCSFileSystem::MakeTemporaryDirectory(std::string* temp_dir)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Make temporary directory operation not yet implemented");
+}
+
+Status
+GCSFileSystem::DeleteDirectory(const std::string& path)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Delete directory operation not yet implemented");
+}
+
 #endif  // TRITON_ENABLE_GCS
 
 
@@ -803,6 +824,8 @@ class ASFileSystem : public FileSystem {
   Status LocalizeDirectory(
       const std::string& path, std::shared_ptr<LocalizedDirectory>* localized);
   Status WriteTextFile(const std::string& path, const std::string& contents);
+  Status MakeTemporaryDirectory(std::string* temp_dir) override;
+  Status DeleteDirectory(const std::string& path) override;
 
  private:
   Status ParsePath(
@@ -1110,6 +1133,23 @@ ASFileSystem::WriteTextFile(
   }
   return Status::Success;
 }
+
+Status
+ASFileSystem::MakeTemporaryDirectory(std::string* temp_dir)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Make temporary directory operation not yet implemented");
+}
+
+Status
+ASFileSystem::DeleteDirectory(const std::string& path)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Delete directory operation not yet implemented");
+}
+
 #endif  // TRITON_ENABLE_AZURE_STORAGE
 
 
@@ -1137,10 +1177,13 @@ class S3FileSystem : public FileSystem {
       std::shared_ptr<LocalizedDirectory>* localized) override;
   Status WriteTextFile(
       const std::string& path, const std::string& contents) override;
+  Status MakeTemporaryDirectory(std::string* temp_dir) override;
+  Status DeleteDirectory(const std::string& path) override;
 
  private:
   Status ParsePath(
       const std::string& path, std::string* bucket, std::string* object);
+  Status CleanPath(const std::string& s3_path, std::string* clean_path);
   Aws::SDKOptions options_;
   s3::S3Client client_;
   re2::RE2 s3_regex_;
@@ -1150,19 +1193,23 @@ Status
 S3FileSystem::ParsePath(
     const std::string& path, std::string* bucket, std::string* object)
 {
-  // Get the bucket name and the object path. Return error if input is malformed
+  // Cleanup extra slashes
+  std::string clean_path;
+  RETURN_IF_ERROR(CleanPath(path, &clean_path));
+
+  // Get the bucket name and the object path. Return error if path is malformed
   std::string host_name, host_port;
   if (!RE2::FullMatch(
-          path, s3_regex_, &host_name, &host_port, bucket, object)) {
-    int bucket_start = path.find("s3://") + strlen("s3://");
-    int bucket_end = path.find("/", bucket_start);
+          clean_path, s3_regex_, &host_name, &host_port, bucket, object)) {
+    int bucket_start = clean_path.find("s3://") + strlen("s3://");
+    int bucket_end = clean_path.find("/", bucket_start);
 
-    // If there isn't a second slash, the address has only the bucket
+    // If there isn't a slash, the address has only the bucket
     if (bucket_end > bucket_start) {
-      *bucket = path.substr(bucket_start, bucket_end - bucket_start);
-      *object = path.substr(bucket_end + 1);
+      *bucket = clean_path.substr(bucket_start, bucket_end - bucket_start);
+      *object = clean_path.substr(bucket_end + 1);
     } else {
-      *bucket = path.substr(bucket_start);
+      *bucket = clean_path.substr(bucket_start);
       *object = "";
     }
   }
@@ -1170,6 +1217,53 @@ S3FileSystem::ParsePath(
   if (bucket->empty()) {
     return Status(
         Status::Code::INTERNAL, "No bucket name found in path: " + path);
+  }
+
+  return Status::Success;
+}
+
+Status
+S3FileSystem::CleanPath(const std::string& s3_path, std::string* clean_path)
+{
+  // Must handle paths with s3 prefix
+  size_t start = s3_path.find("s3://");
+  std::string path = "";
+  if (start != std::string::npos) {
+    path = s3_path.substr(start + strlen("s3://"));
+    *clean_path = "s3://";
+  } else {
+    path = s3_path;
+    *clean_path = "";
+  }
+
+  // Remove trailing slashes
+  size_t rtrim_length = path.find_last_not_of('/');
+  if (rtrim_length == std::string::npos) {
+    return Status(
+        Status::Code::INVALID_ARG, "Invalid bucket name: '" + path + "'");
+  }
+
+  // Remove leading slashes
+  size_t ltrim_length = path.find_first_not_of('/');
+  if (ltrim_length == std::string::npos) {
+    return Status(
+        Status::Code::INVALID_ARG, "Invalid bucket name: '" + path + "'");
+  }
+
+  // Remove extra internal slashes
+  std::string true_path = path.substr(ltrim_length, rtrim_length + 1);
+  std::vector<int> slash_locations;
+  bool previous_slash = false;
+  for (size_t i = 0; i < true_path.size(); i++) {
+    if (true_path[i] == '/') {
+      if (!previous_slash) {
+        *clean_path += true_path[i];
+      }
+      previous_slash = true;
+    } else {
+      *clean_path += true_path[i];
+      previous_slash = false;
+    }
   }
 
   return Status::Success;
@@ -1205,9 +1299,13 @@ S3FileSystem::S3FileSystem(
     config = Aws::Client::ClientConfiguration("default");
   }
 
+  // Cleanup extra slashes
+  std::string clean_path;
+  LOG_STATUS_ERROR(CleanPath(s3_path, &clean_path), "failed to parse S3 path");
+
   std::string host_name, host_port, bucket, object;
   if (RE2::FullMatch(
-          s3_path, s3_regex_, &host_name, &host_port, &bucket, &object)) {
+          clean_path, s3_regex_, &host_name, &host_port, &bucket, &object)) {
     config.endpointOverride = Aws::String(host_name + ":" + host_port);
     config.scheme = Aws::Http::Scheme::HTTP;
   }
@@ -1272,7 +1370,10 @@ S3FileSystem::IsDirectory(const std::string& path, bool* is_dir)
   if (!head_bucket_outcome.IsSuccess()) {
     return Status(
         Status::Code::INTERNAL,
-        "Could not get MetaData for bucket with name " + bucket);
+        "Could not get MetaData for bucket with name " + bucket +
+            " due to exception: " +
+            head_bucket_outcome.GetError().GetExceptionName() +
+            ", error message: " + head_bucket_outcome.GetError().GetMessage());
   }
 
   // Root case - bucket exists and object path is empty
@@ -1291,7 +1392,10 @@ S3FileSystem::IsDirectory(const std::string& path, bool* is_dir)
     *is_dir = !list_objects_outcome.GetResult().GetContents().empty();
   } else {
     return Status(
-        Status::Code::INTERNAL, "Failed to list objects with prefix " + path);
+        Status::Code::INTERNAL,
+        "Failed to list objects with prefix " + path + " due to exception: " +
+            list_objects_outcome.GetError().GetExceptionName() +
+            ", error message: " + list_objects_outcome.GetError().GetMessage());
   }
   return Status::Success;
 }
@@ -1321,7 +1425,10 @@ S3FileSystem::FileModificationTime(const std::string& path, int64_t* mtime_ns)
   } else {
     return Status(
         Status::Code::INTERNAL,
-        "Failed to get modification time for object at " + path);
+        "Failed to get modification time for object at " + path +
+            " due to exception: " +
+            head_object_outcome.GetError().GetExceptionName() +
+            ", error message: " + head_object_outcome.GetError().GetMessage());
   }
   return Status::Success;
 }
@@ -1366,7 +1473,10 @@ S3FileSystem::GetDirectoryContents(
   } else {
     return Status(
         Status::Code::INTERNAL,
-        "Could not list contents of directory at " + true_path);
+        "Could not list contents of directory at " + true_path +
+            " due to exception: " +
+            list_objects_outcome.GetError().GetExceptionName() +
+            ", error message: " + list_objects_outcome.GetError().GetMessage());
   }
   return Status::Success;
 }
@@ -1449,7 +1559,11 @@ S3FileSystem::ReadTextFile(const std::string& path, std::string* contents)
 
     *contents = data;
   } else {
-    return Status(Status::Code::INTERNAL, "Failed to get object at " + path);
+    return Status(
+        Status::Code::INTERNAL,
+        "Failed to get object at " + path + " due to exception: " +
+            get_object_outcome.GetError().GetExceptionName() +
+            ", error message: " + get_object_outcome.GetError().GetMessage());
   }
 
   return Status::Success;
@@ -1472,16 +1586,21 @@ S3FileSystem::LocalizeDirectory(
         Status::Code::INTERNAL, "directory does not exist at " + path);
   }
 
+  // Cleanup extra slashes
+  std::string clean_path;
+  RETURN_IF_ERROR(CleanPath(path, &clean_path));
+
   std::string effective_path, host_name, host_port, bucket, object;
   if (RE2::FullMatch(
-          path, s3_regex_, &host_name, &host_port, &bucket, &object)) {
+          clean_path, s3_regex_, &host_name, &host_port, &bucket, &object)) {
     effective_path = "s3://" + bucket + object;
   } else {
     effective_path = path;
   }
 
   std::string tmp_folder;
-  RETURN_IF_ERROR(MakeTemporaryDirectory(&tmp_folder));
+  RETURN_IF_ERROR(nvidia::inferenceserver::MakeTemporaryDirectory(
+      FileSystemType::LOCAL, &tmp_folder));
 
   localized->reset(new LocalizedDirectory(effective_path, tmp_folder));
 
@@ -1542,7 +1661,11 @@ S3FileSystem::LocalizeDirectory(
           output_file.close();
         } else {
           return Status(
-              Status::Code::INTERNAL, "Failed to get object at " + s3_fpath);
+              Status::Code::INTERNAL,
+              "Failed to get object at " + s3_fpath + " due to exception: " +
+                  get_object_outcome.GetError().GetExceptionName() +
+                  ", error message: " +
+                  get_object_outcome.GetError().GetMessage());
         }
       }
     }
@@ -1558,6 +1681,22 @@ S3FileSystem::WriteTextFile(
   return Status(
       Status::Code::INTERNAL,
       "Write text file operation not yet implemented " + path);
+}
+
+Status
+S3FileSystem::MakeTemporaryDirectory(std::string* temp_dir)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Make temporary directory operation not yet implemented");
+}
+
+Status
+S3FileSystem::DeleteDirectory(const std::string& path)
+{
+  return Status(
+      Status::Code::UNSUPPORTED,
+      "Delete directory operation not yet implemented");
 }
 
 
@@ -1617,6 +1756,25 @@ GetFileSystem(const std::string& path, FileSystem** file_system)
   *file_system = &local_fs;
 
   return Status::Success;
+}
+
+Status
+GetFileSystem(FileSystemType type, FileSystem** file_system)
+{
+  // FIXME currently this function only work for LOCAL, GCS because their
+  // construction is not path-dependent. And in my opinion here should be
+  // where the fs instances are placed and GetFileSystem() should call this
+  // function after it identifies the fs type from path.
+  switch (type) {
+    case FileSystemType::LOCAL:
+      return GetFileSystem("", file_system);
+    case FileSystemType::GCS:
+      return GetFileSystem("gs://", file_system);
+    default:
+      return Status(
+          Status::Code::UNSUPPORTED,
+          "The requested filesteam can not be accessed by type");
+  }
 }
 
 }  // namespace
@@ -1826,6 +1984,81 @@ ReadBinaryProto(const std::string& path, google::protobuf::MessageLite* msg)
   }
 
   return Status::Success;
+}
+
+Status
+MakeTemporaryDirectory(const FileSystemType type, std::string* temp_dir)
+{
+  FileSystem* fs;
+  RETURN_IF_ERROR(GetFileSystem(type, &fs));
+  return fs->MakeTemporaryDirectory(temp_dir);
+}
+
+Status
+DeleteDirectory(const std::string& path)
+{
+  FileSystem* fs;
+  RETURN_IF_ERROR(GetFileSystem(path, &fs));
+  return fs->DeleteDirectory(path);
+}
+
+Status
+GetFileSystemType(const std::string& path, FileSystemType* type)
+{
+  if (path.empty()) {
+    return Status(
+        Status::Code::INVALID_ARG,
+        "Can not infer filesystem type from empty path");
+  }
+#ifdef TRITON_ENABLE_GCS
+  // Check if this is a GCS path (gs://$BUCKET_NAME)
+  if (!path.rfind("gs://", 0)) {
+    *type = FileSystemType::GCS;
+    return Status::Success;
+  }
+#endif  // TRITON_ENABLE_GCS
+
+#ifdef TRITON_ENABLE_S3
+  // Check if this is an S3 path (s3://$BUCKET_NAME)
+  if (!path.rfind("s3://", 0)) {
+    *type = FileSystemType::S3;
+    return Status::Success;
+  }
+#endif  // TRITON_ENABLE_S3
+
+#ifdef TRITON_ENABLE_AZURE_STORAGE
+  // Check if this is an Azure Storage path
+  if (!path.rfind("as://", 0)) {
+    *type = FileSystemType::AS;
+    return Status::Success;
+  }
+#endif  // TRITON_ENABLE_AZURE_STORAGE
+
+  // Assume path is for local filesystem
+  *type = FileSystemType::LOCAL;
+  return Status::Success;
+}
+
+const std::string&
+FileSystemTypeString(const FileSystemType type)
+{
+  static const std::string local_str("LOCAL");
+  static const std::string gcs_str("GCS");
+  static const std::string s3_str("S3");
+  static const std::string as_str("AS");
+  static const std::string unknown_str("UNKNOWN");
+  switch (type) {
+    case FileSystemType::LOCAL:
+      return local_str;
+    case FileSystemType::GCS:
+      return gcs_str;
+    case FileSystemType::S3:
+      return s3_str;
+    case FileSystemType::AS:
+      return as_str;
+    default:
+      return unknown_str;
+  }
 }
 
 }}  // namespace nvidia::inferenceserver

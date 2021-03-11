@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -144,10 +144,205 @@ install(
   RUNTIME DESTINATION bin
 )
 
+set(
+  PINNED_MEMORY_MANAGER_TEST_SRCS
+  pinned_memory_manager_test.cc
+  ${PINNED_MEMORY_MANAGER_SRCS}
+)
+
+set(
+  PINNED_MEMORY_MANAGER_TEST_HDRS
+  ${PINNED_MEMORY_MANAGER_HDRS}
+)
+
+find_package(GTest REQUIRED)
+add_executable(
+  pinned_memory_manager_test
+  ${PINNED_MEMORY_MANAGER_TEST_SRCS}
+  ${PINNED_MEMORY_MANAGER_TEST_HDRS}
+)
+set_target_properties(
+  pinned_memory_manager_test
+  PROPERTIES
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_include_directories(
+  pinned_memory_manager_test
+  PRIVATE ${GTEST_INCLUDE_DIR}
+  PRIVATE ${CUDA_INCLUDE_DIRS}
+)
+target_link_libraries(
+  pinned_memory_manager_test
+  PRIVATE triton-core-serverapi  # from repo-core
+  PRIVATE ${GTEST_LIBRARY}
+  PRIVATE ${GTEST_MAIN_LIBRARY}
+  PRIVATE ${CUDA_LIBRARIES}
+  PRIVATE -lpthread
+)
+install(
+  TARGETS pinned_memory_manager_test
+  RUNTIME DESTINATION bin
+)
+
+#
+# Unit test for AsyncWorkQueue
+#
+set(
+  ASYNC_WORK_QUEUE_SRCS
+  ../core/async_work_queue.cc
+  ../core/status.cc
+)
+
+set(
+  ASYNC_WORK_QUEUE_HDRS
+  ../core/async_work_queue.h
+  ../core/status.h
+)
+
+set(
+  ASYNC_WORK_QUEUE_TEST_SRCS
+  async_work_queue_test.cc
+  ${ASYNC_WORK_QUEUE_SRCS}
+)
+
+set(
+  ASYNC_WORK_QUEUE_TEST_HDRS
+  ${ASYNC_WORK_QUEUE_HDRS}
+)
+
+find_package(GTest REQUIRED)
+add_executable(
+  async_work_queue_test
+  ${ASYNC_WORK_QUEUE_TEST_SRCS}
+  ${ASYNC_WORK_QUEUE_TEST_HDRS}
+)
+set_target_properties(
+  async_work_queue_test
+  PROPERTIES
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_include_directories(
+  async_work_queue_test
+  PRIVATE ${GTEST_INCLUDE_DIR}
+)
+target_link_libraries(
+  async_work_queue_test
+  PRIVATE triton-core-serverapi  # from repo-core
+  PRIVATE ${GTEST_LIBRARY}
+  PRIVATE ${GTEST_MAIN_LIBRARY}
+  PRIVATE -lpthread
+)
+install(
+  TARGETS async_work_queue_test
+  RUNTIME DESTINATION bin
+)
+
+# Generate C++ protobuf files for the following tests
+protobuf_generate_cpp(MODEL_CONFIG_PROTO_SRC MODEL_CONFIG_PROTO_HDR ../core/model_config.proto)
+
+#
+# Unit test for TritonRepoAgent ... (TODO specify the other classes)
+#
+set(
+  TRITON_REPO_AGENT_SRCS
+  ../core/triton_repo_agent.cc
+  ../core/status.cc
+  ../core/filesystem.cc
+  ../core/model_config_utils.cc
+  ../core/model_config.cc
+  ../core/autofill.cc
+)
+
+set(
+  TRITON_REPO_AGENT_HDRS
+  ../core/triton_repo_agent.h
+  ../core/shared_library.h
+  ../core/logging.h
+  ../core/status.h
+  ../core/filesystem.h
+  ../core/model_config_utils.h
+  ../core/model_config.h
+  ${MODEL_CONFIG_PROTO_HDR}
+)
+
+set(
+  TRITON_REPO_AGENT_TEST_SRCS
+  triton_repo_agent_test.cc
+  ${TRITON_REPO_AGENT_SRCS}
+)
+
+set(
+  TRITON_REPO_AGENT_TEST_HDRS
+  ${TRITON_REPO_AGENT_HDRS}
+)
+
+find_package(GTest REQUIRED)
+add_executable(
+  triton_repo_agent_test
+  ${TRITON_REPO_AGENT_TEST_SRCS}
+  ${TRITON_REPO_AGENT_TEST_HDRS}
+  $<TARGET_OBJECTS:proto-library>
+)
+set_target_properties(
+  triton_repo_agent_test
+  PROPERTIES
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_include_directories(
+  triton_repo_agent_test
+  PRIVATE ${GTEST_INCLUDE_DIR}
+)
+target_link_libraries(
+  triton_repo_agent_test
+  PRIVATE triton-core-serverapi  # from repo-core
+  PRIVATE triton-core-repoagentapi  # from repo-core
+  PRIVATE triton-common-json        # from repo-common
+  PRIVATE ${GTEST_LIBRARY}
+  PRIVATE ${GTEST_MAIN_LIBRARY}
+  PRIVATE protobuf::libprotobuf
+  PRIVATE -lpthread
+)
+
+# Remove all TRITON_ENABLE_XXX definitions for this test
+target_compile_options(triton_repo_agent_test PRIVATE
+-UTRITON_ENABLE_ASAN
+-UTRITON_ENABLE_NVTX -UTRITON_ENABLE_TRACING
+-UTRITON_ENABLE_LOGGING
+-UTRITON_ENABLE_STATS
+-UTRITON_ENABLE_GPU
+-UTRITON_ENABLE_METRICS
+-UTRITON_ENABLE_METRICS_GPU
+-UTRITON_ENABLE_TENSORFLOW
+-UTRITON_ENABLE_PYTHON
+-UTRITON_ENABLE_TENSORRT
+-UTRITON_ENABLE_ONNXRUNTIME
+-UTRITON_ENABLE_ONNXRUNTIME_TENSORRT
+-UTRITON_ENABLE_ONNXRUNTIME_OPENVINO
+-UTRITON_ENABLE_PYTORCH
+-UTRITON_ENABLE_CUSTOM
+-UTRITON_ENABLE_ENSEMBLE
+-UTRITON_ENABLE_CUDA_GRAPH
+-UTRITON_ENABLE_GCS
+-UTRITON_ENABLE_AZURE_STORAGE
+-UTRITON_ENABLE_S3)
+
+install(
+  TARGETS triton_repo_agent_test
+  RUNTIME DESTINATION bin
+)
+
 #
 # RateLimiter
 #
-protobuf_generate_cpp(MODEL_CONFIG_PROTO_SRC MODEL_CONFIG_PROTO_HDR ../core/model_config.proto)
 
 set(
   RATE_LIMITER_SRCS
@@ -212,3 +407,4 @@ add_subdirectory(custom/image_preprocess custom/image_preprocess)
 add_subdirectory(custom/param custom/param)
 add_subdirectory(custom/sequence custom/sequence)
 add_subdirectory(custom/dyna_sequence custom/dyna_sequence)
+add_subdirectory(repoagent/relocation_repoagent repoagent/relocation_repoagent)

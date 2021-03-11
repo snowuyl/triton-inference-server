@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -27,11 +27,13 @@
 
 CLIENT_PY=./python_test.py
 CLIENT_LOG="./client.log"
-EXPECTED_NUM_TESTS="6"
+EXPECTED_NUM_TESTS="9"
 
 SERVER=/opt/tritonserver/bin/tritonserver
 SERVER_ARGS="--model-repository=`pwd`/models --log-verbose=1"
 SERVER_LOG="./inference_server.log"
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
+DATADIR=${DATADIR:="/data/inferenceserver/${REPO_VERSION}"}
 source ../common/util.sh
 
 rm -fr *.log ./models
@@ -53,6 +55,11 @@ cp -r ./models/identity_fp32 ./models/identity_uint32
 (cd models/identity_uint32 && \
           sed -i "s/^name:.*/name: \"identity_uint32\"/" config.pbtxt && \
           sed -i "s/TYPE_FP32/TYPE_UINT32/g" config.pbtxt)
+
+cp -r ./models/identity_fp32 ./models/identity_bool
+(cd models/identity_bool && \
+          sed -i "s/^name:.*/name: \"identity_bool\"/" config.pbtxt && \
+          sed -i "s/TYPE_FP32/TYPE_BOOL/g" config.pbtxt)
 
 mkdir -p models/wrong_model/1/
 cp ../python_models/wrong_model/model.py ./models/wrong_model/1/
@@ -90,6 +97,29 @@ cp ../python_models/add_sub/config.pbtxt ./models/add_sub_2/
 (cd models/add_sub_2 && \
           sed -i "s/^name:.*/name: \"add_sub_2\"/" config.pbtxt)
 cp ../python_models/add_sub/model.py ./models/add_sub_2/1/
+
+# Ensemble GPU Model
+mkdir -p models/ensemble_gpu/1/
+cp ../python_models/ensemble_gpu/config.pbtxt ./models/ensemble_gpu
+cp -r ${DATADIR}/qa_model_repository/libtorch_float32_float32_float32/ ./models
+(cd models/libtorch_float32_float32_float32 && \
+          echo "instance_group [ { kind: KIND_GPU }]" >> config.pbtxt)
+(cd models/libtorch_float32_float32_float32 && \
+          sed -i "s/^max_batch_size:.*/max_batch_size: 0/" config.pbtxt)
+(cd models/libtorch_float32_float32_float32 && \
+          sed -i "s/^version_policy:.*//" config.pbtxt)
+rm -rf models/libtorch_float32_float32_float32/2
+rm -rf models/libtorch_float32_float32_float32/3
+
+# Unicode Characters
+mkdir -p models/string/1/
+cp ../python_models/string/model.py ./models/string/1/
+cp ../python_models/string/config.pbtxt ./models/string
+
+# More string tests
+mkdir -p models/string_fixed/1/
+cp ../python_models/string_fixed/model.py ./models/string_fixed/1/
+cp ../python_models/string_fixed/config.pbtxt ./models/string_fixed
 
 pip3 install torch==1.6.0+cpu torchvision==0.7.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
 

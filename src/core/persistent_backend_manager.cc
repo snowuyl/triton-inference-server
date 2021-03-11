@@ -61,7 +61,7 @@ Status
 PersistentBackendManager::InitPersistentBackends(
     const BackendCmdlineConfigMap& config_map)
 {
-  for (const auto& be : {"pytorch", "tensorflow", "onnxruntime"}) {
+  for (const auto& be : {"pytorch", "tensorflow", "onnxruntime", "openvino"}) {
     RETURN_IF_ERROR(InitPersistentBackend(be, config_map));
   }
 
@@ -100,6 +100,11 @@ PersistentBackendManager::InitPersistentBackend(
     RETURN_IF_ERROR(TritonBackendManager::CreateBackend(
         backend_name, backend_dir, backend_libpath, *config, &persist_backend));
     persist_backends_.push_back(persist_backend);
+
+    // Persistent backend shared libraries should never be unloaded
+    // from the executable, even if there is no need for the backend
+    // itself.
+    persist_backend->SetUnloadEnabled(false);
   }
 
   return Status::Success;

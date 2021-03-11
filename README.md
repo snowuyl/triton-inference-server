@@ -1,5 +1,5 @@
 <!--
-# Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2018-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -32,9 +32,9 @@
 
 **LATEST RELEASE: You are currently on the master branch which tracks
 under-development progress towards the next release. The latest
-release of the Triton Inference Server is 2.5.0 and is available on
+release of the Triton Inference Server is 2.7.0 and is available on
 branch
-[r20.11](https://github.com/triton-inference-server/server/tree/r20.11).**
+[r21.02](https://github.com/triton-inference-server/server/tree/r21.02).**
 
 Triton Inference Server provides a cloud and edge inferencing solution
 optimized for both CPUs and GPUs. Triton supports an HTTP/REST and
@@ -44,11 +44,11 @@ available as a shared library with a C API that allows the full
 functionality of Triton to be included directly in an
 application.
 
-The current release of the Triton Inference Server is 2.5.0 and
-corresponds to the 20.11 release of the tritonserver container on
+The current release of the Triton Inference Server is 2.7.0 and
+corresponds to the 21.02 release of the tritonserver container on
 [NVIDIA GPU Cloud (NGC)](https://ngc.nvidia.com). The branch for this
 release is
-[r20.11](https://github.com/triton-inference-server/server/tree/r20.11).
+[r21.02](https://github.com/triton-inference-server/server/tree/r20.12).
 
 ## Features
 
@@ -56,7 +56,7 @@ release is
   frameworks](https://github.com/triton-inference-server/backend). Triton
   can manage any number and mix of models (limited by system disk and
   memory resources). Triton supports TensorRT, TensorFlow GraphDef,
-  TensorFlow SavedModel, ONNX, and PyTorch TorchScript model
+  TensorFlow SavedModel, ONNX, PyTorch TorchScript and OpenVINO model
   formats. Both TensorFlow 1.x and TensorFlow 2.x are
   supported. Triton also supports TensorFlow-TensorRT and
   ONNX-TensorRT integrated models.
@@ -95,6 +95,10 @@ release is
   developed [KFServing
   protocol](https://github.com/kubeflow/kfserving/tree/master/docs/predict-api/v2).
 
+* A [C API](docs/inference_protocols.md#c-api) allows Triton to be
+  linked directly into your application for edge and other in-process
+  use cases.
+
 * [Metrics](docs/metrics.md) indicating GPU utilization, server
   throughput, and server latency. The metrics are provided in
   Prometheus data format.
@@ -103,8 +107,8 @@ release is
 
 **The master branch documentation tracks the upcoming,
 under-development release and so may not be accurate for the current
-release of Triton. See the [r20.11
-documentation](https://github.com/triton-inference-server/server/tree/r20.11#documentation)
+release of Triton. See the [r20.12
+documentation](https://github.com/triton-inference-server/server/tree/r20.12#documentation)
 for the current release.**
 
 [Triton Architecture](docs/architecture.md) gives a high-level
@@ -188,7 +192,7 @@ NVIDIA publishes a number of [deep learning
 examples](https://github.com/NVIDIA/DeepLearningExamples) that use
 Triton.
 
-As part of you deployment strategy you may want to [explicitly manage
+As part of your deployment strategy you may want to [explicitly manage
 what models are available by loading and unloading
 models](docs/model_management.md) from a running Triton server. If you
 are using Kubernetes for deployment a simple example of how to [deploy
@@ -204,6 +208,7 @@ version 2 of Triton from previously using version 1.
 - [Build](docs/build.md)
 - [Protocols and APIs](docs/inference_protocols.md).
 - [Backends](https://github.com/triton-inference-server/backend)
+- [Repository Agents](docs/repository_agents.md)
 - [Test](docs/test.md)
 
 Triton can be [built using
@@ -230,12 +235,16 @@ is the implementation that executes a model. A backend can interface
 with a deep learning framework, like PyTorch, TensorFlow, TensorRT or
 ONNX Runtime; or it can interface with a data processing framework
 like [DALI](https://github.com/triton-inference-server/dali_backend);
-or it can be custom
+or you can extend Triton by [writing your own
+backend](https://github.com/triton-inference-server/backend) in either
 [C/C++](https://github.com/triton-inference-server/backend/blob/main/README.md#triton-backend-api)
-or [Python](https://github.com/triton-inference-server/python_backend)
-code for performing any operation. You can even extend Triton by
-[writing your own
-backend](https://github.com/triton-inference-server/backend).
+or
+[Python](https://github.com/triton-inference-server/python_backend).
+
+A [Triton repository agent](docs/repository_agents.md) extends Triton
+with new functionality that operates when a model is loaded or
+unloaded. You can introduce your own code to perform authentication,
+decryption, conversion, or similar operations when a model is loaded.
 
 ## Papers and Presentation
 

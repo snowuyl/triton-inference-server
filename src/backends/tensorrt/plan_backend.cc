@@ -127,15 +127,24 @@ WarmupRequestComplete(
 PlanBackend::Context::Context(
     const std::string& name, const int gpu_device, const int max_batch_size,
     const bool enable_pinned_input, const bool enable_pinned_output,
+    const size_t gather_kernel_buffer_threshold, const bool separate_output_stream,
     std::unique_ptr<MetricModelReporter>&& metric_reporter)
     : BackendContext(
           name, gpu_device, max_batch_size, enable_pinned_input,
-          enable_pinned_output, std::move(metric_reporter)),
+          enable_pinned_output, gather_kernel_buffer_threshold,
+          std::move(metric_reporter)),
       engine_(nullptr), is_shared_engine_(true), total_bindings_(0),
-      num_expected_bindings_(0)
+      num_expected_bindings_(0), use_output_copy_stream_(separate_output_stream)
 {
   stream_ = nullptr;
   input_copy_stream_ = nullptr;
+  output_copy_stream_ = nullptr;
+  num_copy_streams_ = 1;
+  next_buffer_binding_set_ = 0;
+  if (separate_output_stream) {
+    num_copy_streams_ = 2;
+  }
+
 
   next_set_ = 0;
   for (size_t idx = 0; idx < EVENT_SET_COUNT; idx++) {
@@ -152,17 +161,19 @@ PlanBackend::Context::~Context()
   LOG_VERBOSE(1) << "~PlanBackend::Context ";
 
   cudaSetDevice(gpu_device_);
-  for (auto& io_binding_info : io_binding_infos_) {
-    if (io_binding_info.buffer_ != nullptr) {
-      cudaError_t err = cudaSuccess;
-      if (io_binding_info.memory_type_ == TRITONSERVER_MEMORY_GPU) {
-        err = cudaFree(io_binding_info.buffer_);
-      } else {
-        err = cudaFreeHost(io_binding_info.buffer_);
-      }
-      if (err != cudaSuccess) {
-        LOG_ERROR << "Failed to free allocated memory for '" << name_
-                  << "': " << cudaGetErrorString(err);
+  for (auto& io_binding_infos : io_binding_infos_) {
+    for (auto& io_binding_info : io_binding_infos) {
+      if (io_binding_info.buffer_ != nullptr) {
+        cudaError_t err = cudaSuccess;
+        if (io_binding_info.memory_type_ == TRITONSERVER_MEMORY_GPU) {
+          err = cudaFree(io_binding_info.buffer_);
+        } else {
+          err = cudaFreeHost(io_binding_info.buffer_);
+        }
+        if (err != cudaSuccess) {
+          LOG_ERROR << "Failed to free allocated memory for '" << name_
+                    << "': " << cudaGetErrorString(err);
+        }
       }
     }
   }
@@ -200,6 +211,22 @@ PlanBackend::Context::~Context()
       LOG_ERROR << "Failed to destroy cuda stream: " << cudaGetErrorString(err);
     }
     stream_ = nullptr;
+  }
+
+  if (input_copy_stream_ != nullptr) {
+    cudaError_t err = cudaStreamDestroy(input_copy_stream_);
+    if (err != cudaSuccess) {
+      LOG_ERROR << "Failed to destroy cuda stream: " << cudaGetErrorString(err);
+    }
+    input_copy_stream_ = nullptr;
+  }
+
+  if (output_copy_stream_ != nullptr) {
+    cudaError_t err = cudaStreamDestroy(output_copy_stream_);
+    if (err != cudaSuccess) {
+      LOG_ERROR << "Failed to destroy cuda stream: " << cudaGetErrorString(err);
+    }
+    output_copy_stream_ = nullptr;
   }
 
   if ((engine_ != nullptr) && (!is_shared_engine_)) {
@@ -339,6 +366,25 @@ PlanBackend::CreateExecutionContexts(
                  << gpu_device << " (" << cc << ") using " << cc_model_filename;
         RETURN_IF_ERROR(CreateExecutionContext(
             instance_name, gpu_device, mn_itr->second, group.profile(), queue));
+      }
+    }
+  }
+
+  // If eager batching is set, we duplicate the context idx in
+  // available_context_queue_ to allow Run() return before the context is
+  // actually ready for next batch. The number of duplicates are limited
+  // by number of event sets to prevent too many iterations are run ahead and
+  // to avoid interference of the event communication in the previous execution
+  if (Config().optimization().eager_batching()) {
+    for (auto& queue : available_context_queue_) {
+      std::vector<size_t> context_in_queue;
+      while (!queue->Empty()) {
+        context_in_queue.emplace_back(queue->Get());
+      }
+      for (int count = 0; count < Context::EVENT_SET_COUNT; ++count) {
+        for (const auto context_idx : context_in_queue) {
+          queue->Put(context_idx);
+        }
       }
     }
   }
@@ -495,6 +541,8 @@ PlanBackend::CreateExecutionContext(
       Config().optimization().input_pinned_memory().enable();
   const bool pinned_output =
       Config().optimization().output_pinned_memory().enable();
+  const size_t gather_kernel_buffer_threshold =
+      Config().optimization().gather_kernel_buffer_threshold();
 
   std::unique_ptr<MetricModelReporter> metric_reporter;
 #ifdef TRITON_ENABLE_METRICS
@@ -504,11 +552,16 @@ PlanBackend::CreateExecutionContext(
   }
 #endif  // TRITON_ENABLE_METRICS
 
+  const bool separate_output_stream =
+      Config().optimization().cuda().output_copy_stream();
   contexts_.emplace_back(new Context(
       instance_name, gpu_device, mbs, pinned_input, pinned_output,
+      gather_kernel_buffer_threshold, separate_output_stream,
       std::move(metric_reporter)));
   Context* context = static_cast<Context*>(contexts_.back().get());
   auto context_idx = contexts_.size() - 1;
+
+  context->eager_batching_ = Config().optimization().eager_batching();
 
   // Set the device before preparing the context.
   auto cuerr = cudaSetDevice(gpu_device);
@@ -524,7 +577,10 @@ PlanBackend::CreateExecutionContext(
   RETURN_IF_ERROR(context->CreateCudaStream(cuda_stream_priority));
   RETURN_IF_ERROR(context->CreateCudaStream(
       cuda_stream_priority, &context->input_copy_stream_));
-
+  if (separate_output_stream) {
+    RETURN_IF_ERROR(context->CreateCudaStream(
+        cuda_stream_priority, &context->output_copy_stream_));
+  }
   // Create CUDA events associated with the execution states
   RETURN_IF_ERROR(
       context->InitEventSet(Config().optimization().cuda().busy_wait_events()));
@@ -574,17 +630,29 @@ PlanBackend::CreateExecutionContext(
   // Initialize the inputs and outputs. Make sure the model matches
   // what is in the configuration. Allocate memory for the maximum
   // possible batch size: min(engine maximum, config maximum)
-  context->io_binding_infos_ =
-      std::vector<Context::IOBindingInfo>(context->num_expected_bindings_);
-  context->buffer_bindings_ =
-      std::vector<void*>(context->total_bindings_, nullptr);
+  context->io_binding_infos_.push_back(
+      std::vector<Context::IOBindingInfo>(context->num_expected_bindings_));
+  context->buffer_bindings_.push_back(
+      std::vector<void*>(context->total_bindings_, nullptr));
 
-  RETURN_IF_ERROR(
-      context->InitializeConfigShapeInputBindings(Config().input()));
-  RETURN_IF_ERROR(
-      context->InitializeConfigExecuteInputBindings(Config().input()));
-  RETURN_IF_ERROR(context->InitializeSequenceControlInputBindings(Config()));
-  RETURN_IF_ERROR(context->InitializeBatchInputBindings(Config()));
+  // Use an additional set of buffers if a separate stream is used for output
+  if (separate_output_stream) {
+    context->io_binding_infos_.push_back(
+        std::vector<Context::IOBindingInfo>(context->num_expected_bindings_));
+    context->buffer_bindings_.push_back(
+        std::vector<void*>(context->total_bindings_, nullptr));
+  }
+
+  for (int s = 0; s < context->num_copy_streams_; s++) {
+    context->next_buffer_binding_set_ = s;
+    RETURN_IF_ERROR(
+        context->InitializeConfigShapeInputBindings(Config().input()));
+    RETURN_IF_ERROR(
+        context->InitializeConfigExecuteInputBindings(Config().input()));
+    RETURN_IF_ERROR(context->InitializeSequenceControlInputBindings(Config()));
+    RETURN_IF_ERROR(context->InitializeBatchInputBindings(Config()));
+  }
+
   for (const auto& trt_context : context->trt_contexts_) {
     if (!trt_context.second.context_->allInputDimensionsSpecified()) {
       return Status(
@@ -611,23 +679,28 @@ PlanBackend::CreateExecutionContext(
   }
 
   // Batch output must be processed before other outputs
-  RETURN_IF_ERROR(context->InitializeBatchOutputBindings(Config()));
-  RETURN_IF_ERROR(
-      context->InitializeConfigShapeOutputBindings(Config().output()));
-  RETURN_IF_ERROR(
-      context->InitializeConfigExecuteOutputBindings(Config().output()));
-
+  for (int s = 0; s < context->num_copy_streams_; s++) {
+    context->next_buffer_binding_set_ = s;
+    RETURN_IF_ERROR(context->InitializeBatchOutputBindings(Config()));
+    RETURN_IF_ERROR(
+        context->InitializeConfigShapeOutputBindings(Config().output()));
+    RETURN_IF_ERROR(
+        context->InitializeConfigExecuteOutputBindings(Config().output()));
+  }
+  context->next_buffer_binding_set_ = 0;
   // Make sure every index which corresponds to an execution binding is
   // initialized.
-  for (int i = 0; i < context->num_expected_bindings_; ++i) {
-    if (context->io_binding_infos_[i].buffer_ == nullptr &&
-        context->engine_->isExecutionBinding(i)) {
-      return Status(
-          Status::Code::INVALID_ARG,
-          "expected configuration for " +
-              std::string(
-                  (context->engine_->bindingIsInput(i) ? "input" : "output")) +
-              " '" + context->engine_->getBindingName(i) + "' for " + Name());
+  for (int s = 0; s < context->num_copy_streams_; ++s) {
+    for (int i = 0; i < context->num_expected_bindings_; ++i) {
+      if (context->io_binding_infos_[s][i].buffer_ == nullptr &&
+          context->engine_->isExecutionBinding(i)) {
+        return Status(
+            Status::Code::INVALID_ARG,
+            "expected configuration for " +
+                std::string((
+                    context->engine_->bindingIsInput(i) ? "input" : "output")) +
+                " '" + context->engine_->getBindingName(i) + "' for " + Name());
+      }
     }
   }
 
@@ -760,7 +833,8 @@ PlanBackend::Context::InitializeShapeInputBinding(
   // the maximum byte sizes across all profiles
   int64_t max_byte_size = 0;
   int io_index = engine_->getBindingIndex(input_name.c_str());
-  auto& io_binding_info = io_binding_infos_[io_index];
+
+  auto& io_binding_info = io_binding_infos_[next_buffer_binding_set_][io_index];
   for (auto& trt_context : trt_contexts_) {
     auto& profile_index = trt_context.first;
     auto& context = trt_context.second;
@@ -884,8 +958,8 @@ PlanBackend::Context::InitializeShapeInputBinding(
   if (max_byte_size != NO_BATCHING) {
     // Allocate CUDA memory. Use cudaHostAlloc if zero copy supported. We rely
     // on buffer_bindings_ being non-nullptr to indicate that the buffer has
-    // been correctly initalized so even for zero-sized tensors always allocate
-    // something.
+    // been correctly initalized so even for zero-sized tensors always
+    // allocate something.
     bool zero_copy_support = false;
     RETURN_IF_ERROR(
         SupportsIntegratedZeroCopy(gpu_device_, &zero_copy_support));
@@ -923,14 +997,15 @@ PlanBackend::Context::InitializeShapeInputBinding(
       io_binding_info.memory_type_id_ = gpu_device_;
     }
 
-    // Set buffer bindings of all optimization profile since buffer is allocated
+    // Set buffer bindings of all optimization profile since buffer is
+    // allocated
     for (auto& trt_context : trt_contexts_) {
       auto binding_index =
           num_expected_bindings_ * trt_context.first + io_index;
-      buffer_bindings_[binding_index] = io_binding_info.device_buffer_;
+      buffer_bindings_[next_buffer_binding_set_][binding_index] =
+          io_binding_info.device_buffer_;
     }
   }
-
   return Status::Success;
 }
 
@@ -943,7 +1018,7 @@ PlanBackend::Context::InitializeExecuteInputBinding(
   // the maximum byte sizes across all profiles
   int64_t max_byte_size = 0;
   int io_index = engine_->getBindingIndex(input_name.c_str());
-  auto& io_binding_info = io_binding_infos_[io_index];
+  auto& io_binding_info = io_binding_infos_[next_buffer_binding_set_][io_index];
   for (auto& trt_context : trt_contexts_) {
     auto& profile_index = trt_context.first;
     auto& context = trt_context.second;
@@ -1150,9 +1225,9 @@ PlanBackend::Context::InitializeExecuteInputBinding(
   // Set buffer bindings of all optimization profile since buffer is allocated
   for (auto& trt_context : trt_contexts_) {
     auto binding_index = num_expected_bindings_ * trt_context.first + io_index;
-    buffer_bindings_[binding_index] = io_binding_info.device_buffer_;
+    buffer_bindings_[next_buffer_binding_set_][binding_index] =
+        io_binding_info.device_buffer_;
   }
-
   return Status::Success;
 }
 
@@ -1245,7 +1320,8 @@ PlanBackend::Context::InitializeBatchInputBindings(
           tensor_name, tensor_datatype, dims, false, true));
 
       int io_index = engine_->getBindingIndex(tensor_name.c_str());
-      auto& io_binding_info = io_binding_infos_[io_index];
+      auto& io_binding_info =
+          io_binding_infos_[next_buffer_binding_set_][io_index];
       if (io_binding_info.memory_type_ != TRITONSERVER_MEMORY_GPU) {
         // zero-copy is used so the input buffer is direct-writable
         io_binding_info.batch_input_.reset(new BatchInputData(
@@ -1308,7 +1384,8 @@ PlanBackend::Context::InitializeConfigShapeOutputBindings(
     }
 
     int io_index = engine_->getBindingIndex(io.name().c_str());
-    auto& io_binding_info = io_binding_infos_[io_index];
+    auto& io_binding_info =
+        io_binding_infos_[next_buffer_binding_set_][io_index];
     for (auto& trt_context : trt_contexts_) {
       auto& profile_index = trt_context.first;
       auto& context = trt_context.second;
@@ -1391,10 +1468,10 @@ PlanBackend::Context::InitializeConfigShapeOutputBindings(
     }
 
     if (max_byte_size != NO_BATCHING) {
-      // Allocate CUDA memory. Use cudaHostAlloc if zero copy supported. We rely
-      // on buffer_bindings_ being non-nullptr to indicate that the buffer has
-      // been correctly initalized so even for zero-sized tensors always
-      // allocate something.
+      // Allocate CUDA memory. Use cudaHostAlloc if zero copy supported. We
+      // rely on buffer_bindings_ being non-nullptr to indicate that the
+      // buffer has been correctly initalized so even for zero-sized tensors
+      // always allocate something.
       bool zero_copy_support = false;
       RETURN_IF_ERROR(
           SupportsIntegratedZeroCopy(gpu_device_, &zero_copy_support));
@@ -1437,7 +1514,8 @@ PlanBackend::Context::InitializeConfigShapeOutputBindings(
       for (auto& trt_context : trt_contexts_) {
         auto binding_index =
             num_expected_bindings_ * trt_context.first + io_index;
-        buffer_bindings_[binding_index] = io_binding_info.device_buffer_;
+        buffer_bindings_[next_buffer_binding_set_][binding_index] =
+            io_binding_info.device_buffer_;
       }
     }
   }
@@ -1457,7 +1535,9 @@ PlanBackend::Context::InitializeConfigExecuteOutputBindings(
       continue;
     }
     int io_index = engine_->getBindingIndex(io.name().c_str());
-    auto& io_binding_info = io_binding_infos_[io_index];
+
+    auto& io_binding_info =
+        io_binding_infos_[next_buffer_binding_set_][io_index];
     for (auto& trt_context : trt_contexts_) {
       auto& profile_index = trt_context.first;
       auto& context = trt_context.second;
@@ -1549,8 +1629,8 @@ PlanBackend::Context::InitializeConfigExecuteOutputBindings(
 
     // Allocate CUDA memory. Use cudaHostAlloc if zero copy supported. We rely
     // on buffer_bindings_ being non-nullptr to indicate that the buffer has
-    // been correctly initalized so even for zero-sized tensors always allocate
-    // something.
+    // been correctly initalized so even for zero-sized tensors always
+    // allocate something.
     bool zero_copy_support = false;
     RETURN_IF_ERROR(
         SupportsIntegratedZeroCopy(gpu_device_, &zero_copy_support));
@@ -1601,14 +1681,15 @@ PlanBackend::Context::InitializeConfigExecuteOutputBindings(
       io_binding_info.memory_type_id_ = gpu_device_;
     }
 
-    // Set buffer bindings of all optimization profile since buffer is allocated
+    // Set buffer bindings of all optimization profile since buffer is
+    // allocated
     for (auto& trt_context : trt_contexts_) {
       auto binding_index =
           num_expected_bindings_ * trt_context.first + io_index;
-      buffer_bindings_[binding_index] = io_binding_info.device_buffer_;
+      buffer_bindings_[next_buffer_binding_set_][binding_index] =
+          io_binding_info.device_buffer_;
     }
   }
-
   return Status::Success;
 }
 
@@ -1618,9 +1699,11 @@ PlanBackend::Context::InitializeBatchOutputBindings(
 {
   for (const auto& io : config.batch_output()) {
     for (const auto& name : io.target_name()) {
-      // FIXME Currently not handling the case that batch output is shape tensor
+      // FIXME Currently not handling the case that batch output is shape
+      // tensor
       int io_index = engine_->getBindingIndex(name.c_str());
-      auto& io_binding_info = io_binding_infos_[io_index];
+      auto& io_binding_info =
+          io_binding_infos_[next_buffer_binding_set_][io_index];
       if (engine_->isShapeBinding(io_index)) {
         return Status(
             Status::Code::INVALID_ARG,
@@ -1673,7 +1756,13 @@ PlanBackend::InitializeGraphSpecs(
     // default build for batch sizes 1, 2, 3, 4, 6, 8, 12, 16, 'max_batch_size'.
     // If preferred batch size is specified, then the batch sizes will be
     // 1, preferred batch sizes, 'max_batch_size'.
-    std::set<int> cuda_graph_batch_sizes{1};
+    std::set<int> cuda_graph_batch_sizes;
+    if (Config().max_batch_size() == 0) {
+      cuda_graph_batch_sizes = {0};
+    } else {
+      cuda_graph_batch_sizes = {1};
+    }
+
     if (Config().has_dynamic_batching()) {
       for (const auto bs : Config().dynamic_batching().preferred_batch_size()) {
         cuda_graph_batch_sizes.emplace(bs);
@@ -1687,6 +1776,9 @@ PlanBackend::InitializeGraphSpecs(
       }
     } else {
       cuda_graph_batch_sizes = {1, 2, 3, 4, 6, 8, 12, 16};
+      if (Config().max_batch_size() == 0) {
+        cuda_graph_batch_sizes.emplace(0);
+      }
     }
     if (Config().max_batch_size() > 0) {
       cuda_graph_batch_sizes.emplace(Config().max_batch_size());
@@ -1820,10 +1912,12 @@ PlanBackend::Context::BuildCudaGraph(
   }
 
   // Enqueue to TRT to setup resources properly BEFORE capturing CUDA graph
-  if (!trt_context->context_->enqueue(
-          batch_size, buffer_bindings_.data(), stream_, nullptr)) {
-    LOG_WARNING << "unable to record CUDA graph for " << name_;
-    return false;
+  for (int s = 0; s < num_copy_streams_; s++) {
+    if (!trt_context->context_->enqueue(
+            batch_size, buffer_bindings_[s].data(), stream_, nullptr)) {
+      LOG_WARNING << "unable to record CUDA graph for " << name_;
+      return false;
+    }
   }
 
   bool captured = true;
@@ -1835,6 +1929,8 @@ PlanBackend::Context::BuildCudaGraph(
                   << name_ << ", skipping the duplicated specification";
       return true;
     }
+    // Use second set of buffers to capture cuda graph if double-buffering
+    auto buffer_binding_index = num_copy_streams_ == 1 ? 0 : set_idx;
     cudaGraph_t graph;
     auto cuerr = cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
     if (cuerr != cudaSuccess) {
@@ -1844,8 +1940,8 @@ PlanBackend::Context::BuildCudaGraph(
     } else {
       auto context = trt_context->context_;
       if (!context->enqueue(
-              batch_size, buffer_bindings_.data(), stream_,
-              &events_[set_idx].ready_for_input_)) {
+              batch_size, buffer_bindings_[buffer_binding_index].data(),
+              stream_, &events_[set_idx].ready_for_input_)) {
         LOG_WARNING << "unable to record CUDA graph for " << name_;
         captured = false;
       }
@@ -1908,16 +2004,19 @@ PlanBackend::Context::BuildCudaGraphV2(
   }
 
   // Enqueue to TRT to setup resources properly BEFORE capturing CUDA graph
-  if (!trt_context->context_->enqueueV2(
-          buffer_bindings_.data(), stream_, nullptr)) {
-    LOG_WARNING << "unable to record CUDA graph for " << name_;
-    return false;
+  for (int s = 0; s < num_copy_streams_; s++) {
+    if (!trt_context->context_->enqueueV2(
+            buffer_bindings_[s].data(), stream_, nullptr)) {
+      LOG_WARNING << "unable to record CUDA graph for " << name_;
+      return false;
+    }
   }
 
   bool captured = true;
 
   for (int set_idx = 0; set_idx < EVENT_SET_COUNT; set_idx++) {
     cudaGraph_t graph;
+    int buffer_bindings_index = num_copy_streams_ == 1 ? 0 : set_idx;
     auto cuerr = cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal);
     if (cuerr != cudaSuccess) {
       LOG_ERROR << "unable to start CUDA graph for " << name_ << ": "
@@ -1926,7 +2025,7 @@ PlanBackend::Context::BuildCudaGraphV2(
     } else {
       auto context = trt_context->context_;
       if (!context->enqueueV2(
-              buffer_bindings_.data(), stream_,
+              buffer_bindings_[buffer_bindings_index].data(), stream_,
               &events_[set_idx].ready_for_input_)) {
         LOG_WARNING << "unable to record CUDA graph for " << name_;
         captured = false;
@@ -1982,7 +2081,7 @@ PlanBackend::Context::SetCudaGraphShape(
           ? 1
           : graph_spec.lower_bound_batch_size_);
   for (int io_index = 0; io_index < num_expected_bindings_; io_index++) {
-    auto& io_binding_info = io_binding_infos_[io_index];
+    auto& io_binding_info = io_binding_infos_[0][io_index];
     auto binding_index = binding_offset + io_index;
     if (!engine_->bindingIsInput(binding_index)) {
       continue;
@@ -2144,6 +2243,8 @@ PlanBackend::Run(
     context->next_set_ = (event_set_idx + 1) % context->EVENT_SET_COUNT;
     // Put the details needed by the ProcessResponse thread on the queue
     context->completion_queue_.Put(std::move(context->payload_));
+    context->next_buffer_binding_set_ =
+        (context->next_buffer_binding_set_ + 1) % context->num_copy_streams_;
   }
 
   // Set the next context to be executed on this runner, will block
@@ -2425,14 +2526,24 @@ PlanBackend::Context::Run(
     payload_->responses_.emplace_back(std::move(response));
   }
 
-  // For each input, concatenate input values from each request into
-  // the corresponding binding.
+
+  // Calculate the set of event used with the current buffer set
+  // in previous execution
+  int prev_set = (EVENT_SET_COUNT -
+                  (buffer_bindings_.size() % EVENT_SET_COUNT) + next_set_) %
+                 EVENT_SET_COUNT;
+  auto prev_input_ready_event =
+      eager_batching_ ? events_[prev_set].ready_for_input_ : nullptr;
   std::vector<int64_t> input_dims{(int64_t)payload_->total_batch_size_};
   payload_->collector_.reset(new BackendInputCollector(
       payload_->requests_, &payload_->responses_, enable_pinned_input_,
-      input_copy_stream_, events_[next_set_].input_ready_));
+      gather_kernel_buffer_threshold_, input_copy_stream_,
+      events_[next_set_].input_ready_, prev_input_ready_event));
+  // For each input, concatenate input values from each request into
+  // the corresponding binding.
   for (int io_index = 0; io_index < num_expected_bindings_; ++io_index) {
-    auto& io_binding_info = io_binding_infos_[io_index];
+    auto& io_binding_info =
+        io_binding_infos_[next_buffer_binding_set_][io_index];
     int binding_index = binding_offset + io_index;
     if (!engine_->bindingIsInput(binding_index)) {
       continue;
@@ -2641,7 +2752,8 @@ PlanBackend::Context::Run(
   if ((cuda_graph != nullptr) && !found_exact && (UseTensorRTv2API(engine_))) {
     size_t input_idx = 0;
     for (int io_index = 0; io_index < num_expected_bindings_; ++io_index) {
-      auto& io_binding_info = io_binding_infos_[io_index];
+      auto& io_binding_info =
+          io_binding_infos_[next_buffer_binding_set_][io_index];
       int binding_index = binding_offset + io_index;
       if (!engine_->bindingIsInput(binding_index) ||
           engine_->isShapeBinding(binding_index)) {
@@ -2693,11 +2805,15 @@ PlanBackend::Context::Run(
     }
   }
 
-  // Ensure inputs are ready before execution. Output buffers will always be
-  // available at this point as the execution and output copy are on the same
-  // stream.
+  // Ensure inputs are ready before execution.
+  // Output buffers are guaranteed to be available at this point when the
+  // execution and output copy are on the same stream.
   cudaStreamWaitEvent(stream_, events_[next_set_].input_ready_, 0);
-
+  // Wait for the output buffers to be available at this point when the
+  // execution and output copy are on separate streams
+  if (use_output_copy_stream_) {
+    cudaStreamWaitEvent(stream_, events_[next_set_].output_ready_, 0);
+  }
   // Async execute the inference using a CUDA graph if available for
   // the batch-size, otherwise execution normally.
   if (cuda_graph != nullptr) {
@@ -2740,7 +2856,7 @@ PlanBackend::Context::Run(
     }
     if (UseTensorRTv2API(engine_)) {
       if (!citr->second.context_->enqueueV2(
-              buffer_bindings_.data(), stream_,
+              buffer_bindings_[next_buffer_binding_set_].data(), stream_,
               &events_[next_set_].ready_for_input_)) {
         cudaStreamSynchronize(stream_);
         FAIL_ALL_AND_RETURN_IF_ERROR(
@@ -2752,7 +2868,8 @@ PlanBackend::Context::Run(
       }
     } else {
       if (!citr->second.context_->enqueue(
-              payload_->total_batch_size_, buffer_bindings_.data(), stream_,
+              payload_->total_batch_size_,
+              buffer_bindings_[next_buffer_binding_set_].data(), stream_,
               &events_[next_set_].ready_for_input_)) {
         cudaStreamSynchronize(stream_);
         FAIL_ALL_AND_RETURN_IF_ERROR(
@@ -2780,13 +2897,23 @@ PlanBackend::Context::Run(
     }
   }
 
+  // Wait for the inference to be completed before copying output if output
+  // copy is on a separate stream
+  if (use_output_copy_stream_) {
+    cudaStreamWaitEvent(
+        output_copy_stream_, events_[next_set_].ready_for_output_, 0);
+  }
+
+  const auto output_stream =
+      use_output_copy_stream_ ? output_copy_stream_ : stream_;
   // For each requested output verify that the output can accept the
   // actual model output and then copy that output from the GPU
   payload_->responder_.reset(new BackendResponder(
       payload_->requests_, &payload_->responses_, max_batch_size_,
-      enable_pinned_output_, stream_, events_[next_set_].output_ready_));
+      enable_pinned_output_, output_stream, events_[next_set_].output_ready_));
   for (int io_index = 0; io_index < num_expected_bindings_; ++io_index) {
-    auto& io_binding_info = io_binding_infos_[io_index];
+    auto& io_binding_info =
+        io_binding_infos_[next_buffer_binding_set_][io_index];
     int binding_index = binding_offset + io_index;
     if (engine_->bindingIsInput(binding_index)) {
       continue;
@@ -2990,6 +3117,7 @@ PlanBackend::Context::ProcessResponse(
     cudaEventSynchronize(event_set.ready_for_input_);
     context_queue->Put(context_idx);
     NVTX_MARKER("plan_input_available");
+
 
 #ifdef TRITON_ENABLE_STATS
     cudaEventSynchronize(event_set.ready_for_output_);
@@ -3225,7 +3353,8 @@ PlanBackend::Context::EvaluateTensorRTContext(
   for (const auto& pr : requests[0]->ImmutableInputs()) {
     const auto input = pr.second;
     int io_index = engine_->getBindingIndex(input->Name().c_str());
-    auto& io_binding_info = io_binding_infos_[io_index];
+    auto& io_binding_info =
+        io_binding_infos_[next_buffer_binding_set_][io_index];
     if (io_binding_info.buffer_is_ragged_) {
       std::vector<int64_t> shape{0};
       for (const auto& request : requests) {
@@ -3316,11 +3445,13 @@ operator<<(std::ostream& out, const PlanBackend& pb)
         << std::endl
         << "  bindings:" << std::endl;
 
-    for (int i = 0; i < context->num_expected_bindings_; ++i) {
-      auto& io_binding_info = context->io_binding_infos_[i];
-      out << "    " << i
-          << ": max possible byte_size=" << io_binding_info.byte_size_
-          << ", buffer=" << io_binding_info.buffer_ << " ]" << std::endl;
+    for (int s = 0; s < context->num_copy_streams_; ++s) {
+      for (int i = 0; i < context->num_expected_bindings_; ++i) {
+        auto& io_binding_info = context->io_binding_infos_[s][i];
+        out << "    " << i
+            << ": max possible byte_size=" << io_binding_info.byte_size_
+            << ", buffer=" << io_binding_info.buffer_ << " ]" << std::endl;
+      }
     }
   }
 

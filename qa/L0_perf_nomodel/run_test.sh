@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -27,7 +27,7 @@
 
 REPO_VERSION=$1
 
-BACKENDS=${BACKENDS:="plan custom graphdef savedmodel onnx libtorch"}
+BACKENDS=${BACKENDS:="plan custom graphdef savedmodel onnx libtorch python openvino"}
 STATIC_BATCH_SIZES=${STATIC_BATCH_SIZES:=1}
 DYNAMIC_BATCH_SIZES=${DYNAMIC_BATCH_SIZES:=1}
 INSTANCE_COUNTS=${INSTANCE_COUNTS:=1}
@@ -55,10 +55,13 @@ export CUDA_VISIBLE_DEVICES=0
 mkdir -p ${RESULTDIR}
 RET=0
 
-rm -fr ./custom_models && mkdir ./custom_models && \
-    cp -r ../custom_models/custom_zero_1_float32 ./custom_models/. && \
-    mkdir -p ./custom_models/custom_zero_1_float32/1 && \
-    cp ./libidentity.so ./custom_models/custom_zero_1_float32/1/libcustom.so
+cp /opt/tritonserver/backends/python/triton_python_backend_utils.py .
+
+mkdir -p python_models/python_zero_1_float32/1 && \
+    cp ../python_models/identity_fp32/model.py ./python_models/python_zero_1_float32/1/model.py && \
+    cp ../python_models/identity_fp32/config.pbtxt ./python_models/python_zero_1_float32/config.pbtxt
+(cd python_models/python_zero_1_float32 && \
+    sed -i "s/^name:.*/name: \"python_zero_1_float32\"/" config.pbtxt)
 
 PERF_CLIENT_PERCENTILE_ARGS="" &&
     (( ${PERF_CLIENT_PERCENTILE} != 0 )) &&
@@ -76,16 +79,26 @@ for BACKEND in $BACKENDS; do
         continue
     fi
 
-    # plan model support max batch size of 32 only. Skip for 16MB I/O tests
-    if [ $BACKEND == "plan" ]; then
+    # plan and openvino models do not support 16MB I/O tests
+    if ([ $BACKEND == "plan" ] || [ $BACKEND == "openvino" ]) && [ $TENSOR_SIZE != 1 ]; then
         continue
     fi
 
-    # set naming (special case for libtorch model)
+    # set input name (special case for libtorch model)
     INPUT_NAME="INPUT0" && [ $BACKEND == "libtorch" ] && INPUT_NAME="INPUT__0"
-
+    
     MAX_LATENCY=300
     MAX_BATCH=${STATIC_BATCH} && [ $DYNAMIC_BATCH > $STATIC_BATCH ] && MAX_BATCH=${DYNAMIC_BATCH}
+
+    # TODO Add openvino identity model that supports batching/dynamic batching
+    # The current openvino identity model does also not support batching
+    if [ $BACKEND == "openvino" ]; then
+        if [ $MAX_BATCH != 1 ]; then
+            continue
+        else
+            MAX_BATCH=0
+        fi
+    fi
 
     if [ $DYNAMIC_BATCH > 1 ]; then
         NAME=${BACKEND}_sbatch${STATIC_BATCH}_dbatch${DYNAMIC_BATCH}_instance${INSTANCE_CNT}
@@ -93,11 +106,19 @@ for BACKEND in $BACKENDS; do
         NAME=${BACKEND}_sbatch${STATIC_BATCH}_instance${INSTANCE_CNT}
     fi
 
-    MODEL_NAME=${BACKEND}_zero_1_float32
-    REPO_DIR=./custom_models && \
-        [ $BACKEND != "custom" ] && REPO_DIR=$DATADIR/qa_identity_model_repository
+    # set model name (special case for openvino i.e. nobatch)
+    MODEL_NAME=${BACKEND}_zero_1_float32 && [ $BACKEND == "openvino" ] && MODEL_NAME=${BACKEND}_nobatch_zero_1_float32
+
+    if [ $BACKEND == "custom" ]; then
+        REPO_DIR=./custom_models 
+    elif [ $BACKEND == "python" ]; then
+        REPO_DIR=./python_models 
+    else
+        REPO_DIR=$DATADIR/qa_identity_model_repository
+    fi
+
     SHAPE=${TENSOR_SIZE}
-    KIND="KIND_GPU" && [ $BACKEND == "custom" ] && KIND="KIND_CPU"
+    KIND="KIND_GPU" && [ $BACKEND == "custom" ] || [ $BACKEND == "python" ] || [ $BACKEND == "openvino" ] && KIND="KIND_CPU"
 
     rm -fr models && mkdir -p models && \
         cp -r $REPO_DIR/$MODEL_NAME models/. && \
@@ -108,7 +129,7 @@ for BACKEND in $BACKENDS; do
         (cd models/$MODEL_NAME && \
             sed -i "s/dims:.*\[.*\]/dims: \[ ${SHAPE} \]/g" config.pbtxt)
     fi
-    if [ $DYNAMIC_BATCH > 1 ]; then
+    if [ $DYNAMIC_BATCH > 1 ] && [ $BACKEND != "openvino" ]; then
         (cd models/$MODEL_NAME && \
                 echo "dynamic_batching { preferred_batch_size: [ ${DYNAMIC_BATCH} ] }" >> config.pbtxt)
     fi
@@ -136,6 +157,7 @@ for BACKEND in $BACKENDS; do
     curl localhost:8002/metrics -o ${RESULTDIR}/${NAME}.metrics >> ${RESULTDIR}/${NAME}.log 2>&1
     if [ $? -ne 0 ]; then
         RET=1
+        exit $RET
     fi
     set -e
 

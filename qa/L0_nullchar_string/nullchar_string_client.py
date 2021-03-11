@@ -87,7 +87,7 @@ if __name__ == '__main__':
     # output tensor.
     inputs = [
         client_util.InferInput("INPUT0", input0_data.shape,
-                               np_to_triton_dtype(np.object))
+                               np_to_triton_dtype(np.object_))
     ]
     inputs[0].set_data_from_numpy(input0_data)
 
@@ -96,13 +96,6 @@ if __name__ == '__main__':
     # We expect there to be 1 result (with batch-size 1). Compare the input
     # and output tensor calculated by the model. They must be the same.
     output0_data = results.as_numpy('OUTPUT0')
-    # Element type returned is different between HTTP and GRPC client.
-    # The former is str and the latter is bytes
-    output0_data2 = np.array([
-        output0_data[0]
-        if type(output0_data[0]) == str else output0_data[0].decode('utf8')
-    ],
-                             dtype=object)
 
-    print(input0_data, "?=?", output0_data2)
-    assert np.equal(input0_data, output0_data2).all()
+    print(input0_data, "?=?", output0_data)
+    assert np.equal(input0_data.astype(np.bytes_), output0_data).all()

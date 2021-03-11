@@ -36,11 +36,9 @@ import infer_util as iu
 import test_util as tu
 from functools import partial
 
-import tritongrpcclient as grpcclient
-import tritonhttpclient as httpclient
-import tritonshmutils.shared_memory as shm
-import tritonshmutils.cuda_shared_memory as cudashm
-from tritonclientutils import *
+import tritonclient.grpc as grpcclient
+import tritonclient.http as httpclient
+from tritonclient.utils import *
 
 if sys.version_info >= (3, 0):
     import queue
@@ -51,6 +49,12 @@ _test_system_shared_memory = bool(
     int(os.environ.get('TEST_SYSTEM_SHARED_MEMORY', 0)))
 _test_cuda_shared_memory = bool(
     int(os.environ.get('TEST_CUDA_SHARED_MEMORY', 0)))
+
+if _test_system_shared_memory:
+    import tritonclient.utils.shared_memory as shm
+if _test_cuda_shared_memory:
+    import tritonclient.utils.cuda_shared_memory as cudashm
+
 _test_valgrind = bool(int(os.environ.get('TEST_VALGRIND', 0)))
 _test_jetson = bool(int(os.environ.get('TEST_JETSON', 0)))
 
@@ -117,7 +121,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 # For string we can't know the size of the output
                 # so we conservatively assume 64 bytes for each
                 # element of the output
-                if dtype == np.object:
+                if dtype == np.object_:
                     output_byte_size = 4  # size of empty string
                 else:
                     output_byte_size = 0
@@ -125,9 +129,12 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 # create data
                 input_list = list()
                 for b in range(batch_size):
-                    if dtype == np.object:
+                    if dtype == np.object_:
                         in0 = np.full(tensor_shape, value, dtype=np.int32)
-                        in0n = np.array([str(x) for x in in0.reshape(in0.size)],
+                        in0n = np.array([
+                            str(x).encode('utf-8')
+                            for x in in0.reshape(in0.size)
+                        ],
                                         dtype=object)
                         in0 = in0n.reshape(tensor_shape)
                         output_byte_size += 64 * in0.size
@@ -136,9 +143,13 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                         output_byte_size += np.dtype(dtype).itemsize * in0.size
                     input_list.append(in0)
 
-                input_list_tmp = iu.serialize_byte_tensor_list(input_list) if (
-                    dtype == np.object) else input_list
-                input_byte_size = sum([i0.nbytes for i0 in input_list_tmp])
+                if dtype == np.object_:
+                    input_list_tmp = iu.serialize_byte_tensor_list(input_list)
+                    input_byte_size = sum(
+                        [serialized_byte_size(i0) for i0 in input_list_tmp])
+                else:
+                    input_list_tmp = input_list
+                    input_byte_size = sum([i0.nbytes for i0 in input_list_tmp])
 
                 # create shared memory regions and copy data for input values
                 ip_name = 'ip{}{}'.format(i, j)
@@ -190,7 +201,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 shape_input_list = list()
 
                 for b in range(batch_size):
-                    if dtype == np.object:
+                    if dtype == np.object_:
                         in0 = np.full(tensor_shape, value, dtype=np.int32)
                         in0n = np.array([str(x) for x in in0.reshape(in0.size)],
                                         dtype=object)
@@ -203,9 +214,14 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 shape_input_list.append(
                     np.full(tensor_shape, shape_value, dtype=np.int32))
 
-                input_list_tmp = iu.serialize_byte_tensor_list(input_list) if (
-                    dtype == np.object) else input_list
-                input_byte_size = sum([i0.nbytes for i0 in input_list_tmp])
+                if dtype == np.object_:
+                    input_list_tmp = iu.serialize_byte_tensor_list(input_list)
+                    input_byte_size = sum(
+                        [serialized_byte_size(i0) for i0 in input_list_tmp])
+                else:
+                    input_list_tmp = input_list
+                    input_byte_size = sum([i0.nbytes for i0 in input_list_tmp])
+
                 shape_input_byte_size = sum(
                     [i0.nbytes for i0 in shape_input_list])
                 shape_output_byte_size = shape_input_byte_size
@@ -278,7 +294,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 dummy_input_list = list()
 
                 for b in range(batch_size):
-                    if dtype == np.object:
+                    if dtype == np.object_:
                         dummy_in0 = np.full(tensor_shape, value, dtype=np.int32)
                         dummy_in0n = np.array(
                             [str(x) for x in dummy_in0.reshape(in0.size)],
@@ -294,13 +310,20 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 shape_input_list.append(
                     np.full(tensor_shape, shape_value, dtype=np.int32))
 
-                input_list_tmp = iu.serialize_byte_tensor_list(input_list) if (
-                    dtype == np.object) else input_list
-                input_byte_size = sum([i0.nbytes for i0 in input_list_tmp])
-                shape_input_byte_size = sum(
-                    [i0.nbytes for i0 in shape_input_list])
+                if dtype == np.object_:
+                    input_list_tmp = iu.serialize_byte_tensor_list(input_list)
+                    input_byte_size = sum(
+                        [serialized_byte_size(i0) for i0 in input_list_tmp])
+                else:
+                    input_list_tmp = input_list
+                    input_byte_size = sum(
+                        [i0.nbytes for i0 in input_list_tmp])
+
                 dummy_input_byte_size = sum(
                     [i0.nbytes for i0 in dummy_input_list])
+
+                shape_input_byte_size = sum(
+                    [i0.nbytes for i0 in shape_input_list])
                 shape_output_byte_size = shape_input_byte_size
                 output_byte_size = np.dtype(np.int32).itemsize + 2
                 resized_output_byte_size = 32 * shape_value
@@ -365,8 +388,10 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
 
     def cleanup_shm_regions(self, shm_handles):
         # Make sure unregister is before shared memory destruction
-        self.triton_client_.unregister_system_shared_memory()
-        self.triton_client_.unregister_cuda_shared_memory()
+        if _test_system_shared_memory:
+            self.triton_client_.unregister_system_shared_memory()
+        if _test_cuda_shared_memory:
+            self.triton_client_.unregister_cuda_shared_memory()
         for shm_tmp_handle in shm_handles:
             if _test_system_shared_memory:
                 shm.destroy_shared_memory_region(shm_tmp_handle[2])
@@ -474,7 +499,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                         client_utils.InferInput(
                             INPUT, full_shape, np_to_triton_dtype(input_dtype)))
                     outputs.append(client_utils.InferRequestedOutput(OUTPUT))
-                    if input_dtype == np.object:
+                    if input_dtype == np.object_:
                         in0 = np.full(full_shape, value, dtype=np.int32)
                         in0n = np.array([str(x) for x in in0.reshape(in0.size)],
                                         dtype=object)
@@ -484,10 +509,17 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
 
                     # create input shared memory and copy input data values into it
                     if _test_system_shared_memory or _test_cuda_shared_memory:
-                        input_list_tmp = iu.serialize_byte_tensor_list(
-                            [in0]) if (input_dtype == np.object) else [in0]
-                        input_byte_size = sum(
-                            [i0.nbytes for i0 in input_list_tmp])
+                        if input_dtype == np.object_:
+                            input_list_tmp = iu.serialize_byte_tensor_list(
+                                [in0])
+                            input_byte_size = sum([
+                                serialized_byte_size(i0)
+                                for i0 in input_list_tmp
+                            ])
+                        else:
+                            input_list_tmp = [in0]
+                            input_byte_size = sum(
+                                [i0.nbytes for i0 in input_list_tmp])
                         ip_name = "ip{}".format(len(shm_ip_handles))
                         if _test_system_shared_memory:
                             shm_ip_handles.append(
@@ -578,7 +610,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
 
                 seq_end_ms = int(round(time.time() * 1000))
 
-                if input_dtype == np.object:
+                if input_dtype == np.object_:
                     self.assertEqual(int(result), expected_result)
                 else:
                     self.assertEqual(result, expected_result)
@@ -669,7 +701,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                 outputs.append(client_utils.InferRequestedOutput(OUTPUT))
 
                 if not (_test_system_shared_memory or _test_cuda_shared_memory):
-                    if input_dtype == np.object:
+                    if input_dtype == np.object_:
                         in0 = np.full(full_shape, value, dtype=np.int32)
                         in0n = np.array([str(x) for x in in0.reshape(in0.size)],
                                         dtype=object)
@@ -727,7 +759,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
 
             seq_end_ms = int(round(time.time() * 1000))
 
-            if input_dtype == np.object:
+            if input_dtype == np.object_:
                 self.assertEqual(int(result), expected_result)
             else:
                 self.assertEqual(result, expected_result)
@@ -821,7 +853,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                     np.full(shape_tensor_shape, shape_value, dtype=np.int32))
                 if not _test_system_shared_memory:
                     if using_dynamic_batcher:
-                        if input_dtype == np.object:
+                        if input_dtype == np.object_:
                             dummy_in0 = np.full(tensor_shape,
                                                 value,
                                                 dtype=np.int32)
@@ -835,7 +867,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
                                                 dtype=input_dtype)
                         in0 = np.full(tensor_shape, value, dtype=np.int32)
                     else:
-                        if input_dtype == np.object:
+                        if input_dtype == np.object_:
                             in0 = np.full(tensor_shape, value, dtype=np.int32)
                             in0n = np.array(
                                 [str(x) for x in in0.reshape(in0.size)],
@@ -913,7 +945,7 @@ class SequenceBatcherTestUtil(tu.TestResultCollector):
 
             seq_end_ms = int(round(time.time() * 1000))
 
-            if input_dtype == np.object:
+            if input_dtype == np.object_:
                 self.assertEqual(int(result), expected_result)
             else:
                 self.assertEqual(result, expected_result)

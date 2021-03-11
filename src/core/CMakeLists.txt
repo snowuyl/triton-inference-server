@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -109,6 +109,33 @@ if(${TRITON_ENABLE_GPU})
 endif() # TRITON_ENABLE_GPU
 
 #
+# Triton repo agent API
+#
+set(
+  REPOAGENT_SRCS
+  triton_repo_agent.cc
+)
+
+set(
+  REPOAGENT_HDRS
+  triton_repo_agent.h
+)
+
+add_library(
+  triton-repoagent-library EXCLUDE_FROM_ALL OBJECT
+  ${REPOAGENT_SRCS} ${REPOAGENT_HDRS}
+)
+add_dependencies(triton-repoagent-library proto-library)
+
+target_link_libraries(
+  triton-repoagent-library
+  PUBLIC
+    triton-core-repoagentapi  # from repo-core
+    triton-core-serverapi   # from repo-core
+    triton-common-json      # from repo-common
+)
+
+#
 # Inference server core
 #
 if(${TRITON_ENABLE_GCS})
@@ -123,6 +150,22 @@ if(${TRITON_ENABLE_S3})
   find_package(AWSSDK REQUIRED COMPONENTS s3)
   message(STATUS "Using aws-sdk-cpp ${AWSSDK_VERSION}")
 endif()
+
+if(${TRITON_ENABLE_GPU})
+  set(HOST_COMPILER_FLAGS "")
+  if (WIN32)
+    set(HOST_COMPILER_FLAGS "/MD")
+  endif()
+
+  set(CUDA_LIBRARIES PUBLIC ${CUDA_LIBRARIES})
+  cuda_add_library(
+    kernel-library 
+    kernel.cu kernel.h
+    OPTIONS -arch compute_53
+    OPTIONS -code compute_53,sm_53,sm_60,sm_61,sm_62,sm_70,sm_72,sm_75
+    OPTIONS -Xcompiler ${HOST_COMPILER_FLAGS}
+  )
+endif() # TRITON_ENABLE_GPU
 
 set(
   SERVER_SRCS
@@ -150,6 +193,7 @@ set(
   scheduler_utils.cc
   sequence_batch_scheduler.cc
   server.cc
+  shared_library.cc
   infer_stats.cc
   infer_trace.cc
   status.cc
@@ -188,6 +232,7 @@ set(
   sequence_batch_scheduler.h
   server.h
   server_message.h
+  shared_library.h
   infer_stats.h
   infer_trace.h
   status.h
@@ -203,6 +248,7 @@ if(${TRITON_ENABLE_GPU})
     SERVER_HDRS
     ${SERVER_HDRS}
     cuda_memory_manager.h
+    kernel.h
   )
 endif() # TRITON_ENABLE_GPU
 

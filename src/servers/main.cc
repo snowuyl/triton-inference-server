@@ -31,14 +31,12 @@
 #include <stdint.h>
 #include <algorithm>
 #include <cctype>
-#include <condition_variable>
-#include <csignal>
 #include <iomanip>
 #include <iostream>
 #include <list>
-#include <mutex>
 #include <set>
 #include <sstream>
+#include "src/servers/signal.h"
 
 #ifdef TRITON_ENABLE_ASAN
 #include <sanitizer/lsan_interface.h>
@@ -65,12 +63,6 @@ static_assert(
 #endif  // TRITON_ENABLE_GPU
 
 namespace {
-
-// Exit mutex and cv used to signal the main thread that it should
-// close the server and exit.
-volatile bool exiting_ = false;
-std::mutex exit_mu_;
-std::condition_variable exit_cv_;
 
 // Interval, in seconds, when the model repository is polled for
 // changes.
@@ -207,6 +199,7 @@ enum OptionId {
   OPTION_GRPC_PORT,
   OPTION_GRPC_INFER_ALLOCATION_POOL_SIZE,
   OPTION_GRPC_USE_SSL,
+  OPTION_GRPC_USE_SSL_MUTUAL,
   OPTION_GRPC_SERVER_CERT,
   OPTION_GRPC_SERVER_KEY,
   OPTION_GRPC_ROOT_CERT,
@@ -229,6 +222,7 @@ enum OptionId {
   OPTION_MIN_SUPPORTED_COMPUTE_CAPABILITY,
   OPTION_EXIT_TIMEOUT_SECS,
   OPTION_BACKEND_DIR,
+  OPTION_REPOAGENT_DIR,
   OPTION_BUFFER_MANAGER_THREAD_COUNT,
   OPTION_BACKEND_CONFIG
 };
@@ -315,6 +309,8 @@ std::vector<Option> options_
        "request/response objects."},
       {OPTION_GRPC_USE_SSL, "grpc-use-ssl", Option::ArgBool,
        "Use SSL authentication for GRPC requests. Default is false."},
+      {OPTION_GRPC_USE_SSL_MUTUAL, "grpc-use-ssl-mutual", Option::ArgBool,
+       "Use mututal SSL authentication for GRPC requests. Default is false."},
       {OPTION_GRPC_SERVER_CERT, "grpc-server-cert", Option::ArgStr,
        "File holding PEM-encoded server certificate. Ignored unless "
        "--grpc-use-ssl is true."},
@@ -391,6 +387,9 @@ std::vector<Option> options_
       {OPTION_BACKEND_DIR, "backend-directory", Option::ArgStr,
        "The global directory searched for backend shared libraries. Default is "
        "'/opt/tritonserver/backends'."},
+      {OPTION_REPOAGENT_DIR, "repoagent-directory", Option::ArgStr,
+       "The global directory searched for repository agent shared libraries. "
+       "Default is '/opt/tritonserver/repoagents'."},
       {OPTION_BUFFER_MANAGER_THREAD_COUNT, "buffer-manager-thread-count",
        Option::ArgInt,
        "The number of threads used to accelerate copies and other operations "
@@ -402,25 +401,6 @@ std::vector<Option> options_
         "<backend_name> is the name of the backend, such as 'tensorrt'."
   }
 };
-
-void
-SignalHandler(int signum)
-{
-  // Don't need a mutex here since signals should be disabled while in
-  // the handler.
-  std::cout << "Interrupt signal (" << signum << ") received." << std::endl;
-
-  // Do nothing if already exiting...
-  if (exiting_)
-    return;
-
-  {
-    std::unique_lock<std::mutex> lock(exit_mu_);
-    exiting_ = true;
-  }
-
-  exit_cv_.notify_all();
-}
 
 bool
 CheckPortCollision()
@@ -848,6 +828,7 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
   int32_t buffer_manager_thread_count = 0;
 
   std::string backend_dir = "/opt/tritonserver/backends";
+  std::string repoagent_dir = "/opt/tritonserver/repoagents";
   std::vector<std::tuple<std::string, std::string, std::string>>
       backend_config_settings;
 
@@ -959,6 +940,10 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
       case OPTION_GRPC_USE_SSL:
         grpc_use_ssl = ParseBoolOption(optarg);
         break;
+      case OPTION_GRPC_USE_SSL_MUTUAL:
+        grpc_ssl_options_.use_mutual_auth = ParseBoolOption(optarg);
+        grpc_use_ssl = true;
+        break;
       case OPTION_GRPC_SERVER_CERT:
         grpc_ssl_options_.server_cert = optarg;
         break;
@@ -1031,6 +1016,9 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
         break;
       case OPTION_BACKEND_DIR:
         backend_dir = optarg;
+        break;
+      case OPTION_REPOAGENT_DIR:
+        repoagent_dir = optarg;
         break;
       case OPTION_BUFFER_MANAGER_THREAD_COUNT:
         buffer_manager_thread_count = ParseIntOption(optarg);
@@ -1170,6 +1158,10 @@ Parse(TRITONSERVER_ServerOptions** server_options, int argc, char** argv)
       TRITONSERVER_ServerOptionsSetBackendDirectory(
           loptions, backend_dir.c_str()),
       "setting backend directory");
+  FAIL_IF_ERR(
+      TRITONSERVER_ServerOptionsSetRepoAgentDirectory(
+          loptions, repoagent_dir.c_str()),
+      "setting repository agent directory");
   for (const auto& bcs : backend_config_settings) {
     FAIL_IF_ERR(
         TRITONSERVER_ServerOptionsSetBackendConfig(
@@ -1222,11 +1214,15 @@ main(int argc, char** argv)
   }
 
   // Trap SIGINT and SIGTERM to allow server to exit gracefully
-  signal(SIGINT, SignalHandler);
-  signal(SIGTERM, SignalHandler);
+  TRITONSERVER_Error* signal_err =
+      nvidia::inferenceserver::RegisterSignalHandler();
+  if (signal_err != nullptr) {
+    LOG_TRITONSERVER_ERROR(signal_err, "failed to register signal handler");
+    exit(1);
+  }
 
   // Wait until a signal terminates the server...
-  while (!exiting_) {
+  while (!nvidia::inferenceserver::signal_exiting_) {
     // If enabled, poll the model repository to see if there have been
     // any changes.
     if (repository_poll_secs_ > 0) {
@@ -1237,10 +1233,10 @@ main(int argc, char** argv)
 
     // Wait for the polling interval (or a long time if polling is not
     // enabled). Will be woken if the server is exiting.
-    std::unique_lock<std::mutex> lock(exit_mu_);
+    std::unique_lock<std::mutex> lock(nvidia::inferenceserver::signal_exit_mu_);
     std::chrono::seconds wait_timeout(
         (repository_poll_secs_ == 0) ? 3600 : repository_poll_secs_);
-    exit_cv_.wait_for(lock, wait_timeout);
+    nvidia::inferenceserver::signal_exit_cv_.wait_for(lock, wait_timeout);
   }
 
   TRITONSERVER_Error* stop_err = TRITONSERVER_ServerStop(server_ptr);

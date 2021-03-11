@@ -1,5 +1,5 @@
 <!--
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -47,10 +47,10 @@ $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-min
 $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3
 ```
 
-Where <xx.yy> is the version of Triton that you want to customize. The
-<xx.yy>-py3-min image is a minimal, base image that contains the CUDA,
+Where \<xx.yy\> is the version of Triton that you want to customize. The
+\<xx.yy\>-py3-min image is a minimal, base image that contains the CUDA,
 cuDNN, etc. dependencies that are required to run Triton. The
-<xx.yy>-py3 image contains the complete Triton with all options and
+\<xx.yy\>-py3 image contains the complete Triton with all options and
 backends.
 
 ### Minimum Triton
@@ -65,24 +65,25 @@ backends.
 ```
 FROM nvcr.io/nvidia/tritonserver:<xx.yy>-py3 as full
 FROM nvcr.io/nvidia/tritonserver:<xx.yy>-py3-min
-COPY --from full /opt/tritonserver/bin /opt/tritonserver/bin
-COPY --from full /opt/tritonserver/lib /opt/tritonserver/lib
+COPY --from=full /opt/tritonserver/bin /opt/tritonserver/bin
+COPY --from=full /opt/tritonserver/lib /opt/tritonserver/lib
 ```
 
-Then build the image.
+Then use Docker to create the image.
 
 ```
 $ docker build -t tritonserver_min .
 ```
 
-### Triton with Specific Backends
+### Triton with Supported Backends
 
-One or more of the
+One or more of the supported
 [PyTorch](https://github.com/triton-inference-server/pytorch_backend),
 [TensorFlow1](https://github.com/triton-inference-server/tensorflow_backend),
 [TensorFlow2](https://github.com/triton-inference-server/tensorflow_backend),
 [ONNX
 Runtime](https://github.com/triton-inference-server/onnxruntime_backend),
+[OpenVINO](https://github.com/triton-inference-server/openvino_backend),
 [Python](https://github.com/triton-inference-server/python_backend),
 and [DALI](https://github.com/triton-inference-server/dali_backend)
 backends can be added to the minimum Triton image. The backend can be
@@ -94,11 +95,41 @@ following Dockerfile.
 ```
 FROM nvcr.io/nvidia/tritonserver:<xx.yy>-py3 as full
 FROM nvcr.io/nvidia/tritonserver:<xx.yy>-py3-min
-COPY --from full /opt/tritonserver/bin /opt/tritonserver/bin
-COPY --from full /opt/tritonserver/lib /opt/tritonserver/lib
-COPY --from full /opt/tritonserver/backends/tensorflow1 /opt/tritonserver/backends/tensorflow1
+COPY --from=full /opt/tritonserver/bin /opt/tritonserver/bin
+COPY --from=full /opt/tritonserver/lib /opt/tritonserver/lib
+COPY --from=full /opt/tritonserver/backends/tensorflow1 /opt/tritonserver/backends/tensorflow1
 ```
 
 Depending on the backend it may also be necessary to include
 additional dependencies in the image. For example, the Python backend
 requires that Python3 be installed in the image.
+
+Then use Docker to create the image.
+
+```
+$ docker build -t tritonserver_custom .
+```
+
+### Triton with Unsupported and Custom Backends
+
+You can [create and build your own Triton
+backend](https://github.com/triton-inference-server/backend).  The
+result of that build should be a directory containing your backend
+shared library and any additional files required by the
+backend. Assuming your backend is called "mybackend" and that the
+directory is "./mkbackend", the following Dockerfile will create a
+Triton image that contains all the supported Triton backends plus your
+custom backend.
+
+```
+FROM nvcr.io/nvidia/tritonserver:<xx.yy>-py3 as full
+COPY ./mybackend /opt/tritonserver/backends/mybackend
+```
+
+You also need to install any additional dependencies required by your
+backend as part of the Dockerfile. Then use Docker to create the
+image.
+
+```
+$ docker build -t tritonserver_custom .
+```

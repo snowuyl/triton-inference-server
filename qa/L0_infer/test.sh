@@ -39,7 +39,6 @@ export CUDA_VISIBLE_DEVICES=0
 
 CLIENT_LOG_BASE="./client"
 INFER_TEST=infer_test.py
-EXPECTED_NUM_TESTS=${EXPECTED_NUM_TESTS:="42"}
 
 if [ -z "$TEST_SYSTEM_SHARED_MEMORY" ]; then
     TEST_SYSTEM_SHARED_MEMORY="0"
@@ -51,7 +50,7 @@ fi
 
 if [ -z "$TEST_VALGRIND" ]; then
     TEST_VALGRIND="0"
-fi 
+fi
 
 if [ "$TEST_VALGRIND" -eq 1 ]; then
     LEAKCHECK_LOG_BASE="./valgrind_test"
@@ -62,15 +61,29 @@ if [ "$TEST_VALGRIND" -eq 1 ]; then
 fi
 
 if [ "$TEST_SYSTEM_SHARED_MEMORY" -eq 1 ] || [ "$TEST_CUDA_SHARED_MEMORY" -eq 1 ]; then
-    EXPECTED_NUM_TESTS="29"
+  EXPECTED_NUM_TESTS=${EXPECTED_NUM_TESTS:="29"}
+else
+  EXPECTED_NUM_TESTS=${EXPECTED_NUM_TESTS:="42"}
 fi
 
-MODELDIR=`pwd`/models
-DATADIR=${DATADIR:="/data/inferenceserver/${REPO_VERSION}"}
-OPTDIR=${OPTDIR:="/opt"}
-SERVER=${OPTDIR}/tritonserver/bin/tritonserver
-BACKEND_DIR=${OPTDIR}/tritonserver/backends
 TF_VERSION=${TF_VERSION:=1}
+
+# On windows the paths invoked by the script (running in WSL) must use
+# /mnt/c when needed but the paths on the tritonserver command-line
+# must be C:/ style.
+if [[ "$(< /proc/sys/kernel/osrelease)" == *Microsoft ]]; then
+    MODELDIR=${MODELDIR:=C:/models}
+    DATADIR=${DATADIR:="/mnt/c/data/inferenceserver/${REPO_VERSION}"}
+    BACKEND_DIR=${BACKEND_DIR:=C:/tritonserver/backends}
+    SERVER=${SERVER:=/mnt/c/tritonserver/bin/tritonserver.exe}
+    export USE_HTTP=0
+else
+    MODELDIR=${MODELDIR:=`pwd`/models}
+    DATADIR=${DATADIR:="/data/inferenceserver/${REPO_VERSION}"}
+    OPTDIR=${OPTDIR:="/opt"}
+    SERVER=${OPTDIR}/tritonserver/bin/tritonserver
+    BACKEND_DIR=${OPTDIR}/tritonserver/backends
+fi
 
 # Allow more time to exit. Ensemble brings in too many models
 SERVER_ARGS_EXTRA="--exit-timeout-secs=120 --backend-directory=${BACKEND_DIR} --backend-config=tensorflow,version=${TF_VERSION}"
@@ -229,7 +242,12 @@ for TARGET in cpu gpu; do
         LEAKCHECK_LOG=$LEAKCHECK_LOG_BASE.${TARGET}.log
         LEAKCHECK_ARGS="$LEAKCHECK_ARGS_BASE --log-file=$LEAKCHECK_LOG"
         run_server_leakcheck
-    else  
+    elif [[ "$(< /proc/sys/kernel/osrelease)" == *Microsoft ]]; then
+        # We rely on HTTP endpoint in run_server so until HTTP is
+        # implemented for win we do this hack...
+        run_server_nowait
+        sleep 15
+    else
         run_server
     fi
 
@@ -241,7 +259,7 @@ for TARGET in cpu gpu; do
 
     set +e
 
-    python $INFER_TEST >$CLIENT_LOG 2>&1
+    python3 $INFER_TEST >$CLIENT_LOG 2>&1
     if [ $? -ne 0 ]; then
         cat $CLIENT_LOG
         RET=1
@@ -257,12 +275,11 @@ for TARGET in cpu gpu; do
 
     set -e
 
-    kill $SERVER_PID
-    wait $SERVER_PID
+    kill_server
 
     set +e
     if [ "$TEST_VALGRIND" -eq 1 ]; then
-        check_valgrind_log $LEAKCHECK_LOG 
+        check_valgrind_log $LEAKCHECK_LOG
         if [ $? -ne 0 ]; then
             RET=1
         fi

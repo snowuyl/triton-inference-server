@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -38,7 +38,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set(CMAKE_CXX_FLAGS "/W4 /D_WIN32_WINNT=0x0A00 /EHsc")
   set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
 else()
-  set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wno-unused-parameter -Werror")
+  set(CMAKE_CXX_FLAGS "-Wall -Wextra -Wno-unused-parameter -Werror -Wno-deprecated-declarations")
   set(CMAKE_CXX_FLAGS_DEBUG "-g")
   set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 endif()
@@ -83,18 +83,16 @@ if(${TRITON_ENABLE_GRPC})
   add_definitions(-DTRITON_ENABLE_GRPC=1)
 endif() # TRITON_ENABLE_GRPC
 
-if(NOT WIN32)
-  #
-  # CUDA
-  #
-  if(${TRITON_ENABLE_GPU})
-    find_package(CUDA REQUIRED)
-    message(STATUS "Using CUDA ${CUDA_VERSION}")
+#
+# CUDA
+#
+if(${TRITON_ENABLE_GPU})
+  find_package(CUDA REQUIRED)
+  message(STATUS "Using CUDA ${CUDA_VERSION}")
 
-    add_definitions(-DTRITON_ENABLE_GPU=1)
-    set(CUDA_NVCC_FLAGS -std=c++11)
-  endif() # TRITON_ENABLE_GPU
-endif() # NOT WIN32
+  add_definitions(-DTRITON_ENABLE_GPU=1)
+  set(CUDA_NVCC_FLAGS -std=c++11)
+endif() # TRITON_ENABLE_GPU
 
 if(${TRITON_ENABLE_GRPC})
   #

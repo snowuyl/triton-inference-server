@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -1443,7 +1443,11 @@ class InferInput:
         self._input.parameters.pop('shared_memory_offset', None)
 
         if self._input.datatype == "BYTES":
-            self._raw_content = serialize_byte_tensor(input_tensor).tobytes()
+            serialized_output = serialize_byte_tensor(input_tensor)
+            if serialized_output.size > 0:
+                self._raw_content = serialized_output.item()
+            else:
+                self._raw_content = b''
         else:
             self._raw_content = input_tensor.tobytes()
 
@@ -1621,10 +1625,11 @@ class InferResult:
                             self._result.raw_output_contents[index],
                             dtype=triton_to_np_dtype(datatype))
                 elif len(output.contents.byte_contents) != 0:
-                    np_array = np.array(output.contents.byte_contents)
+                    np_array = np.array(output.contents.byte_contents,
+                                        copy=False)
                 else:
                     np_array = np.empty(0)
-                np_array = np.resize(np_array, shape)
+                np_array = np_array.reshape(shape)
                 return np_array
             else:
                 index += 1

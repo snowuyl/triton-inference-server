@@ -72,6 +72,8 @@ _cshm_shared_memory_region_destroy = _cshm.SharedMemoryRegionDestroy
 _cshm_shared_memory_region_destroy.restype = c_int
 _cshm_shared_memory_region_destroy.argtypes = [c_void_p]
 
+mapped_shm_regions = []
+
 
 def _raise_if_error(errno):
     """
@@ -90,7 +92,7 @@ def _raise_error(msg):
 
 
 def create_shared_memory_region(triton_shm_name, shm_key, byte_size):
-    """Creates a shared memory region with the specified name and size.
+    """Creates a system shared memory region with the specified name and size.
 
     Parameters
     ----------
@@ -104,7 +106,7 @@ def create_shared_memory_region(triton_shm_name, shm_key, byte_size):
     Returns
     -------
     shm_handle : c_void_p
-        The handle for the shared memory region.
+        The handle for the system shared memory region.
 
     Raises
     ------
@@ -117,24 +119,25 @@ def create_shared_memory_region(triton_shm_name, shm_key, byte_size):
         c_int(
             _cshm_shared_memory_region_create(triton_shm_name, shm_key,
                                               byte_size, byref(shm_handle))))
+    mapped_shm_regions.append(shm_key)
 
     return shm_handle
 
 
 def set_shared_memory_region(shm_handle, input_values):
-    """Copy the contents of the numpy array into a shared memory region.
+    """Copy the contents of the numpy array into the system shared memory region.
 
     Parameters
     ----------
     shm_handle : c_void_p
-        The handle for the shared memory region.
+        The handle for the system shared memory region.
     input_values : list
         The list of numpy arrays to be copied into the shared memory region.
 
     Raises
     ------
     SharedMemoryException
-        If unable to mmap or set values in the shared memory region.
+        If unable to mmap or set values in the system shared memory region.
     """
 
     if not isinstance(input_values, (list, tuple)):
@@ -147,22 +150,29 @@ def set_shared_memory_region(shm_handle, input_values):
     offset_current = 0
     for input_value in input_values:
         input_value = np.ascontiguousarray(input_value).flatten()
-        byte_size = input_value.size * input_value.itemsize
-        _raise_if_error(
-            c_int(_cshm_shared_memory_region_set(shm_handle, c_uint64(offset_current), \
-                c_uint64(byte_size), input_value.ctypes.data_as(c_void_p))))
+        if input_value.dtype == np.object_:
+            input_value = input_value.item()
+            byte_size = np.dtype(np.byte).itemsize * len(input_value)
+            _raise_if_error(
+                c_int(_cshm_shared_memory_region_set(shm_handle, c_uint64(offset_current), \
+                    c_uint64(byte_size), cast(input_value, c_void_p))))
+        else:
+            byte_size = input_value.size * input_value.itemsize
+            _raise_if_error(
+                c_int(_cshm_shared_memory_region_set(shm_handle, c_uint64(offset_current), \
+                    c_uint64(byte_size), input_value.ctypes.data_as(c_void_p))))
         offset_current += byte_size
     return
 
 
 def get_contents_as_numpy(shm_handle, datatype, shape):
-    """Generates a numpy array using the data stored in the shared memory
+    """Generates a numpy array using the data stored in the system shared memory
     region specified with the handle.
 
     Parameters
     ----------
-    cuda_shm_handle : c_void_p
-        The handle for the cuda shared memory region.
+    shm_handle : c_void_p
+        The handle for the system shared memory region.
     datatype : np.dtype
         The datatype of the array to be returned.
     shape : list
@@ -171,7 +181,7 @@ def get_contents_as_numpy(shm_handle, datatype, shape):
     Returns
     -------
     np.array
-        The numpy array generated using contents from the specified shared
+        The numpy array generated using the contents of the specified shared
         memory region.
     """
     shm_fd = c_int()
@@ -183,12 +193,12 @@ def get_contents_as_numpy(shm_handle, datatype, shape):
             c_int(_cshm_get_shared_memory_handle_info(shm_handle, byref(shm_addr), byref(shm_key), byref(shm_fd), \
                                     byref(offset), byref(byte_size))))
     start_pos = offset.value
-    if (datatype != np.object) and (datatype != np.bytes_):
+    if (datatype != np.object_) and (datatype != np.bytes_):
         requested_byte_size = np.prod(shape) * np.dtype(datatype).itemsize
         cval_len = start_pos + requested_byte_size
         if byte_size.value < cval_len:
             _raise_error(
-                "The size of shared memory is unsufficient to provide numpy array with requested size"
+                "The size of the shared memory region is unsufficient to provide numpy array with requested size"
             )
         if cval_len == 0:
             result = np.empty(shape, dtype=datatype)
@@ -219,13 +229,25 @@ def get_contents_as_numpy(shm_handle, datatype, shape):
     return result
 
 
+def mapped_shared_memory_regions():
+    """Return all system shared memory regions that were mapped but not unmapped/destoryed.
+
+    Returns
+    -------
+    list
+        The list of mapped system shared memory regions.
+    """
+
+    return mapped_shm_regions
+
+
 def destroy_shared_memory_region(shm_handle):
-    """Unlink a shared memory region with the specified handle.
+    """Unlink a system shared memory region with the specified handle.
 
     Parameters
     ----------
     shm_handle : c_void_p
-        The handle for the shared memory region.
+        The handle for the system shared memory region.
 
     Raises
     ------
@@ -234,6 +256,17 @@ def destroy_shared_memory_region(shm_handle):
     """
 
     _raise_if_error(c_int(_cshm_shared_memory_region_destroy(shm_handle)))
+
+    shm_fd = c_int()
+    offset = c_uint64()
+    byte_size = c_uint64()
+    shm_addr = c_char_p()
+    shm_key = c_char_p()
+    _raise_if_error(
+            c_int(_cshm_get_shared_memory_handle_info(shm_handle, byref(shm_addr), byref(shm_key), byref(shm_fd), \
+                                    byref(offset), byref(byte_size))))
+    mapped_shm_regions.remove(shm_key.value.decode("utf-8"))
+
     return
 
 

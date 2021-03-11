@@ -32,24 +32,80 @@ import argparse
 import numpy as np
 import os
 from builtins import range
-import tritonhttpclient
+import tritonclient.http as tritonhttpclient
+import tritonclient.grpc as tritongrpcclient
+import tritonclient.utils as tritonutils
 import unittest
 import test_util as tu
 
 
 class ClientStringTest(tu.TestResultCollector):
+    def _test_infer_unicode(self, model_name, client, input_):
+        # Send inference request to the inference server. Get results for
+        # both output tensors.
+        inputs = []
+        outputs = []
+        inputs.append(client[1].InferInput('INPUT0', input_.shape, "BYTES"))
 
-    def test_tf_unicode_bytes(self):
-        # We use a simple model that takes an input tensor of 8 byte strings
-        # and returns an output tensors of 8 strings. The output tensor
-        # is the same as the input tensor.
-        model_name = "graphdef_nobatch_zero_1_object"
-        model_version = ""
+        if client[1] == tritonhttpclient:
+            inputs[0].set_data_from_numpy(input_, client[3])
+        else:
+            inputs[0].set_data_from_numpy(input_)
 
-        # Create the inference server client for the model.
-        triton_client = tritonhttpclient.InferenceServerClient("localhost:8000",
-                                                               verbose=True)
+        if client[1] == tritonhttpclient:
+            outputs.append(client[1].InferRequestedOutput(
+                'OUTPUT0', binary_data=client[2]))
+        else:
+            outputs.append(client[1].InferRequestedOutput('OUTPUT0'))
 
+        results = client[0].infer(model_name=model_name,
+                                  inputs=inputs,
+                                  outputs=outputs)
+
+        out0 = results.as_numpy('OUTPUT0')
+        # We expect there to be 1 results (with batch-size 1). Verify
+        # that all 8 result elements are the same as the input.
+        self.assertTrue(np.array_equal(input_, out0))
+        return out0
+
+    def _test_infer_non_unicode(self,
+                                model_name,
+                                client,
+                                input_,
+                                binary_data=True):
+        # Send inference request to the inference server. Get results for
+        # both output tensors.
+        inputs = []
+        outputs = []
+        inputs.append(client[1].InferInput('INPUT0', input_.shape, "BYTES"))
+
+        if client[1] == tritonhttpclient:
+            inputs[0].set_data_from_numpy(input_, client[3])
+        else:
+            inputs[0].set_data_from_numpy(input_)
+
+        if client[1] == tritonhttpclient:
+            outputs.append(client[1].InferRequestedOutput(
+                'OUTPUT0', binary_data=client[2]))
+        else:
+            outputs.append(client[1].InferRequestedOutput('OUTPUT0'))
+
+        results = client[0].infer(model_name=model_name,
+                                  inputs=inputs,
+                                  outputs=outputs)
+
+        out0 = results.as_numpy('OUTPUT0')
+        # We expect there to be 1 results (with batch-size 1). Verify
+        # that all 8 result elements are the same as the input.
+        if client[2]:
+            self.assertTrue(np.array_equal(input_.astype(np.bytes_), out0))
+        else:
+            self.assertTrue(
+                np.array_equal(input_.astype(np.bytes_),
+                               out0.astype(np.bytes_)))
+        return out0
+
+    def _test_unicode_bytes_dtype(self, client, model_name, dtype='|S78'):
         # Create the data for the input tensor. Initialize the tensor to 8
         # byte strings. (dtype of np.bytes_)
         # Sample string that should no longer cause failure
@@ -70,34 +126,73 @@ class ClientStringTest(tu.TestResultCollector):
                 b'\nJ\n\r\n\x01b\x12\x08\x1a\x06\n\x04\x9b\x94\xad\x04\n\r\n\x01c\x12\x08\x12\x06\n\x04\xc3\x8a\x08\xbf\n*\n\x01a\x12%\x1a#\n!\x9c\x02\xb2\x02\xcd\x02\x9d\x07\x8d\x01\xb6\x05a\xf1\x01\xf0\x05\xdb\x02\xac\x04\xbd\x05\xe0\x04\xd2\x06\xaf\x02\xa8\x01\x8b\x04'
             ],
             [
-                b'\n3\n\x13\n\x01a\x12\x0e\x1a\x0c\n\n<\xe2\x05\x8a\x01\xb3\x07?\xfd\x01\n\r\n\x01b\x12\x08\x1a\x06\n\x04\xf6\xa2\xc5\x01\n\r\n\x01c\x12\x08\x12\x06\n\x04\x1b\x931\xbf'
+                b'\n3\n\x13\n\x01a\x12\x0e\x1a\x0c\n\n<\xe2\x05\x8a\x01\xb3\x07?\xfd\x01\n\r\n\x01b\x12\x08\x1a\x06\n\x04\xf6\xa2\xc5\x01\n\r\n\x01c\x12\x08\x12\x06\n\x04\x1b\x931\xbf\x00\x00'
             ],
             [
-                b'\n&\n\x07\n\x01a\x12\x02\x1a\x00\n\x0c\n\x01b\x12\x07\x1a\x05\n\x03\x89\xcc=\n\r\n\x01c\x12\x08\x12\x06\n\x04{\xbc\x0e>'
+                b'\n&\n\x07\n\x01a\x12\x02\x1a\x00\n\x0c\n\x01b\x12\x07\x1a\x05\n\x03\x89\xcc=\n\r\n\x01c\x12\x08\x12\x06\n\x04{\xbc\x0e>\x00\x00\x00'
             ],
             [
                 b'\nF\n\'\n\x01a\x12"\x1a \n\x1e\x97\x01\x93\x02\x9e\x01\xac\x06\xff\x01\xd8\x05\xe1\x07\xd8\x04g]\x9a\x05\xff\x06\xde\x07\x8f\x04\x97\x04\xda\x03\n\x0c\n\x01b\x12\x07\x1a\x05\n\x03\x9a\xb7I\n\r\n\x01c\x12\x08\x12\x06\n\x04\xfb\x87\x83\xbf'
             ]
         ],
-                       dtype='|S78').flatten()
+                       dtype=dtype).flatten()
+        self._test_infer_unicode(model_name, client, in0)
 
-        # Send inference request to the inference server. Get results for
-        # both output tensors.
-        inputs = []
-        outputs = []
-        inputs.append(tritonhttpclient.InferInput('INPUT0', in0.shape, "BYTES"))
-        inputs[0].set_data_from_numpy(in0)
+    def _test_str_dtype(self, client, model_name, dtype=np.object_):
+        in0_bytes = np.array([str(i) for i in range(10000, 10008)],
+                             dtype=dtype)
+        self._test_infer_non_unicode(model_name, client, in0_bytes)
 
-        outputs.append(tritonhttpclient.InferRequestedOutput('OUTPUT0'))
+        in0_bytes = np.array([i for i in range(10000, 10008)], dtype=dtype)
+        self._test_infer_non_unicode(model_name, client, in0_bytes)
 
-        results = triton_client.infer(model_name=model_name,
-                                      inputs=inputs,
-                                      outputs=outputs,
-                                      model_version=model_version)
+    def _test_bytes(self, model_name):
+        dtypes = [np.object_, np.object, np.bytes_]
 
-        # We expect there to be 1 results (with batch-size 1). Verify
-        # that all 8 result elements are the same as the input.
-        self.assertTrue(np.array_equal(in0, results.as_numpy('OUTPUT0')))
+        # This clients will fail for binary_data=False when the binary input
+        # is not UTF-8 encodable. They should work for other cases however.
+        binary_false_clients = [
+            (tritonhttpclient.InferenceServerClient("localhost:8000",
+                                                    verbose=True),
+             tritonhttpclient, True, False),
+            (tritonhttpclient.InferenceServerClient("localhost:8000",
+                                                    verbose=True),
+             tritonhttpclient, False, False),
+            (tritonhttpclient.InferenceServerClient("localhost:8000",
+                                                    verbose=True),
+             tritonhttpclient, False, True),
+        ]
+
+        # These clients work for every data type
+        other_clients = [
+            (tritongrpcclient.InferenceServerClient("localhost:8001",
+                                                    verbose=True),
+             tritongrpcclient, False),
+            (tritonhttpclient.InferenceServerClient("localhost:8000",
+                                                    verbose=True),
+             tritonhttpclient, True, True),
+        ]
+
+        for client in other_clients + binary_false_clients:
+            self._test_str_dtype(client, model_name)
+            for dtype in dtypes:
+                self._test_str_dtype(client, model_name, dtype)
+
+        for client in other_clients:
+            self._test_unicode_bytes_dtype(client, model_name)
+            for dtype in dtypes:
+                self._test_unicode_bytes_dtype(client, model_name, dtype)
+
+        for client in binary_false_clients:
+            with self.assertRaises(tritonutils.InferenceServerException):
+                self._test_unicode_bytes_dtype(client, model_name)
+            for dtype in dtypes:
+                with self.assertRaises(tritonutils.InferenceServerException):
+                    self._test_unicode_bytes_dtype(client, model_name, dtype)
+
+    def test_tf_unicode_bytes(self):
+        self._test_bytes("graphdef_nobatch_zero_1_object")
+        self._test_bytes("string_identity")
 
 
 if __name__ == '__main__':

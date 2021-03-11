@@ -24,12 +24,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# Default setting is building on nvidia/cuda:11.1-devel-ubuntu18.04
-ARG BASE_IMAGE=nvidia/cuda:11.1-devel-ubuntu18.04
+# Default setting is building on nvidia/cuda:11.1-devel-ubuntu20.04
+ARG BASE_IMAGE=nvidia/cuda:11.1-devel-ubuntu20.04
 
 ARG TRITON_COMMON_REPO_TAG=main
 ARG TRITON_CORE_REPO_TAG=main
 ARG TRITON_MODEL_ANALYZER_REPO_TAG=main
+ARG CMAKE_UBUNTU_VERSION=20.04
 
 FROM ${BASE_IMAGE}
 
@@ -63,13 +64,24 @@ RUN apt-get update && \
     pip3 install --upgrade grpcio-tools && \
     pip3 install --upgrade pip
 
+ARG CMAKE_UBUNTU_VERSION
 # Client build requires recent version of CMake (FetchContent required)
 RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | \
       gpg --dearmor - |  \
       tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \
-    apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main' && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends cmake && \
+    if [ "$CMAKE_UBUNTU_VERSION" = "20.04" ]; then \
+      apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' && \
+      apt-get update && \
+      apt-get install -y --no-install-recommends \
+        cmake-data=3.18.4-0kitware1ubuntu20.04.1 cmake=3.18.4-0kitware1ubuntu20.04.1; \
+    elif [ "$CMAKE_UBUNTU_VERSION" = "18.04" ]; then \
+      apt-add-repository 'deb https://apt.kitware.com/ubuntu/ bionic main' && \
+      apt-get update && \
+      apt-get install -y --no-install-recommends \
+        cmake-data=3.18.4-0kitware1 cmake=3.18.4-0kitware1; \
+    else \
+      echo "ERROR: Only support CMAKE_UBUNTU_VERSION to be 18.04 or 20.04" && false; \
+    fi && \
     cmake --version
 
 # Build expects "python" executable (not python3).
@@ -78,7 +90,7 @@ RUN rm -f /usr/bin/python && \
 
 # Build the client library and examples
 WORKDIR /workspace
-COPY VERSION .
+COPY TRITON_VERSION .
 COPY build build
 COPY src/clients src/clients
 COPY src/core src/core
@@ -94,7 +106,7 @@ RUN mkdir builddir && cd builddir && \
           -DTRITON_ENABLE_HTTP=ON ../build && \
     make -j16 client
 RUN cd install && \
-    export VERSION=`cat /workspace/VERSION` && \
+    export VERSION=`cat /workspace/TRITON_VERSION` && \
     tar zcf /workspace/v$VERSION.clients.tar.gz *
 
 # For CI testing need to install a test script.
@@ -124,4 +136,3 @@ RUN pip3 install "git+${TRITON_MODEL_ANALYZER_REPO}"
 
 ENV PATH /workspace/install/bin:${PATH}
 ENV LD_LIBRARY_PATH /workspace/install/lib:${LD_LIBRARY_PATH}
-

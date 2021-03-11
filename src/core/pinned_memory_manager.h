@@ -27,6 +27,7 @@
 #pragma once
 
 #include <boost/interprocess/managed_external_buffer.hpp>
+#include <map>
 #include <memory>
 #include <mutex>
 #include "src/core/status.h"
@@ -65,7 +66,9 @@ class PinnedMemoryManager {
   static Status Free(void* ptr);
 
  protected:
-  PinnedMemoryManager(void* pinned_memory_buffer, uint64_t size);
+  // Provide explicit control on the lifecycle of the CUDA memory manager,
+  // for testing only.
+  static void Reset();
 
   Status AllocInternal(
       void** ptr, uint64_t size, TRITONSERVER_MemoryType* allocated_type,
@@ -73,6 +76,8 @@ class PinnedMemoryManager {
   Status FreeInternal(void* ptr);
 
  private:
+  PinnedMemoryManager(void* pinned_memory_buffer, uint64_t size);
+
   static std::unique_ptr<PinnedMemoryManager> instance_;
   static uint64_t pinned_memory_byte_size_;
 
