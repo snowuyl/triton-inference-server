@@ -27,3 +27,4 @@
 geventhttpclient>=1.4.4
 numpy>=1.19.1
 python-rapidjson>=0.9.1
+setuptools>=70.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
